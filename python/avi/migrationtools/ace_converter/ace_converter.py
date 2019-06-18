@@ -36,7 +36,6 @@ class AceConvertor(AviConverter):
         self.controller_version = args.controller_version
         self.sdk_version = sdk_version
         self.enable_vs = (True if str(args.vs_state) == "enable" else False)
-        print "enable_vs", self.enable_vs, args.vs_state
         self.input_folder_location = args.input_folder_location
         self.tenant = args.tenant
         self.cloud = args.cloud_name
@@ -74,11 +73,11 @@ class AceConvertor(AviConverter):
         parsed_output = parser.parse_ace()
         # Configuration Conversion
         print "configuration conversion started ..."
-        cfgConvert = ConfigConverter(parsed_output,
-                                     version=self.controller_version, enable_vs=self.enable_vs,
-                                     input_folder_loc=self.input_folder_location,
-                                     tenant=self.tenant, cloud=self.cloud, vrf=self.vrf_name,
-                                     segroup=self.segroup)
+        cfgConvert = ConfigConverter(
+            parsed_output, version=self.controller_version,
+            enable_vs=self.enable_vs,
+            input_folder_loc=self.input_folder_location, tenant=self.tenant,
+            cloud=self.cloud, vrf=self.vrf_name, segroup=self.segroup)
         converted_output = cfgConvert.conversion()
 
         out_file = "/%s-config.json" % os.path.splitext(
@@ -150,6 +149,7 @@ class AceConvertor(AviConverter):
 
             # increment the row value
             row += 1
+        workbook.close()
 
     def print_pip_and_controller_version(self):
         # Added input parameters to log file
@@ -224,7 +224,7 @@ Optional:
                         help='location of key and cert file')
 
     parser.add_argument('-o', '--output_loc',
-                        help='Out file location', default='.')
+                        help='Out file location', default='output')
 
     # Auto Upload Options
     parser.add_argument('-O', '--option',
@@ -247,7 +247,8 @@ Optional:
                         help='state of VS created', default='disable')
 
     # add segroup flag
-    parser.add_argument('-se', '--segroup', help='Update the available segroup ref with the'
+    parser.add_argument('-se', '--segroup',
+                        help='Update the available segroup ref with the'
                         'custom ref')
 
     parser.add_argument('-t', '--tenant',
