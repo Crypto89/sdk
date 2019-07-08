@@ -19,7 +19,7 @@ urllib3.disable_warnings()
 
 DEFAULT_API_VERSION = '16.4.4'
 
-AVICLONE_VERSION = [1, 1, 1]
+AVICLONE_VERSION = [1, 2, 0]
 
 # Try to obtain the terminal width to allow spprint() to wrap output neatly.
 # If unable to determine, assume terminal width is 70 characters
@@ -63,7 +63,8 @@ class AviClone:
         'vs-sslprofile': 'ssl_profile_ref',
         'vs-sslcert': 'ssl_key_and_certificate_refs',
         'vs-wafpolicy': 'waf_policy_ref',
-        'vs-rewritablecontent': 'content_rewrite/rewritable_content_ref'}
+        'vs-rewritablecontent': 'content_rewrite/rewritable_content_ref',
+        'vs-authprofile': 'client_auth/auth_profile_ref'}
     VALID_APPLICATIONPROFILE_REF_OBJECTS = {
         'appprofile-cachemimetypesblacklist':
             'http_profile/cache_config/mime_types_black_group_refs',
@@ -74,11 +75,15 @@ class AviClone:
         'appprofile-compressibleipaddrgroup': 'ip_addrs_ref',
         'appprofile-compressibledevices': 'devices_ref'}
     VALID_WAFPOLICY_REF_OBJECTS = {'waf-profile': 'waf_profile_ref'}
+    VALID_SSLCERT_REF_OBJECTS = {
+        'ssl-certmgmt': 'certificate_management_profile_ref',
+        'ssl-hsmgroup': 'hardwaresecuritymodulegroup_ref'}
 
-    def __init__(self, source_api, dest_api=None):
+    def __init__(self, source_api, dest_api=None, flags=None):
         self.api = source_api
         self.dest_api = dest_api or source_api
         self.flush_actions()
+        self.flags = flags or []
 
     def flush_actions(self):
         self.actions = []
@@ -192,10 +197,34 @@ class AviClone:
 
         self._delete_created_objs(objs, tenant_uuid)
 
+    def get_new_name(self, object_type, new_name,
+                     otenant_uuid, force_unique_name=False):
+        new_obj_check = self.dest_api.get_object_by_name(
+                                object_type, new_name, tenant_uuid=otenant_uuid)
+
+        if new_obj_check is not None:
+            if force_unique_name:
+                count = 1
+                new_name_prefix = new_name
+                while new_obj_check is not None:
+                    new_name = '-'.join([new_name_prefix, str(count)])
+                    count += 1
+                    new_obj_check = self.dest_api.get_object_by_name(
+                                                   object_type,
+                                                   new_name,
+                                                   tenant_uuid=otenant_uuid)
+                logger.debug('Forced unique name "%s"', new_name)
+            else:
+                raise Exception('An object of type %s with '
+                                'name "%s" already exists'
+                                % (object_type, new_name))
+        return new_name
+
     def clone_object(self, old_name, new_name, object_type=None, tenant=None,
                      other_tenant=None, other_cloud=None,
                      force_clone=None, force_unique_name=False,
-                     t_obj=None, ot_obj=None, oc_obj=None):
+                     t_obj=None, ot_obj=None, oc_obj=None,
+                     server_map=None):
         """
         Clones an object other than a virtual service
 
@@ -203,10 +232,10 @@ class AviClone:
         different cloud.
 
         Returns a tuple: json representation of the cloned object,
-        list of additional objects created if any
+        list of additional objects created if any and any warnings generated
 
-        :param old__name: Name of existing virtual service
-        :param new__name: New name for cloned virtual service
+        :param old_name: Name of existing object
+        :param new_name: New name for cloned object
         :param tenant: Tenant for existing object
         :param other_tenant: Tenant for cloned object
         :param other_cloud: Cloud for cloned object
@@ -272,34 +301,17 @@ class AviClone:
             old_name = old_obj['name']
         else:
             old_obj = self.api.get_object_by_name(object_type, old_name,
-                              params=({'export_key': True}
-                                      if object_type == 'sslkeyandcertificate'
-                                      else None),
-                              tenant_uuid=tenant_uuid)
+                                tenant_uuid=tenant_uuid,
+                                params=({'export_key': True}
+                                        if object_type == 'sslkeyandcertificate'
+                                        else None))
 
         if not old_obj:
             raise Exception('Object of type %s named %s could not be found'
                             % (object_type, old_name))
 
-        new_obj_check = self.dest_api.get_object_by_name(
-                        object_type, new_name, tenant_uuid=otenant_uuid)
-
-        if new_obj_check is not None:
-            if force_unique_name:
-                count = 1
-                new_name_prefix = new_name
-                while new_obj_check is not None:
-                    new_name = '-'.join([new_name_prefix, str(count)])
-                    count += 1
-                    new_obj_check = self.dest_api.get_object_by_name(
-                                                   object_type,
-                                                   new_name,
-                                                   tenant_uuid=otenant_uuid)
-                logger.debug('Forced unique name "%s"', new_name)
-            else:
-                raise Exception('An object of type %s with '
-                                'name "%s" already exists'
-                                % (object_type, new_name))
+        new_name = self.get_new_name(object_type, new_name, otenant_uuid,
+                                     force_unique_name)
 
         # Remove unique attributes and rename object
 
@@ -308,51 +320,61 @@ class AviClone:
         old_obj['name'] = new_name
 
         created_objs = []
+        warnings = []
 
         try:
             # Do object-type specific processing of child objects etc.
 
             if object_type == 'pool':
-                created_objs = self._process_pool(p_obj=old_obj, t_obj=t_obj,
-                                                  ot_obj=ot_obj, oc_obj=oc_obj,
-                                                  force_clone=force_clone)
+                created_objs, warnings = self._process_pool(
+                    p_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
+                    oc_obj=oc_obj, force_clone=force_clone)
             elif object_type == 'poolgroup':
-                created_objs = self._process_poolgroup(pg_obj=old_obj,
-                                                       t_obj=t_obj,
-                                                       ot_obj=ot_obj,
-                                                       oc_obj=oc_obj,
-                                                       force_clone=force_clone)
+                created_objs, warnings = self._process_poolgroup(
+                    pg_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
+                    oc_obj=oc_obj, force_clone=force_clone)
             elif object_type == 'httppolicyset':
-                created_objs = self._process_httppolicyset(
-                    ps_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj,
-                    force_clone=force_clone)
+                created_objs, warnings = self._process_httppolicyset(
+                    ps_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
+                    oc_obj=oc_obj, force_clone=force_clone,
+                    server_map=server_map)
             elif object_type == 'vsdatascriptset':
-                created_objs = self._process_vsdatascriptset(
-                    ds_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj,
-                    force_clone=force_clone)
+                created_objs, warnings = self._process_vsdatascriptset(
+                    ds_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
+                    oc_obj=oc_obj, force_clone=force_clone,
+                    server_map=server_map)
             elif object_type == 'networksecuritypolicy':
-                created_objs = self._process_networksecuritypolicy(
-                    ns_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj,
-                    force_clone=force_clone)
+                created_objs, warnings = self._process_networksecuritypolicy(
+                    ns_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
+                    oc_obj=oc_obj, force_clone=force_clone)
             elif object_type == 'dnspolicy':
-                created_objs = self._process_dnspolicy(
-                    dp_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj,
-                    force_clone=force_clone)
+                created_objs, warnings = self._process_dnspolicy(
+                    dp_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
+                    oc_obj=oc_obj, force_clone=force_clone)
             elif object_type == 'applicationprofile':
-                created_objs = self._process_applicationprofile(
-                    ap_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj,
-                    force_clone=force_clone)
+                created_objs, warnings = self._process_applicationprofile(
+                    ap_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
+                    oc_obj=oc_obj, force_clone=force_clone)
             elif object_type == 'wafpolicy':
-                created_objs = self._process_wafpolicy(
-                    wp_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj,
-                    force_clone=force_clone)
+                created_objs, warnings = self._process_wafpolicy(
+                    wp_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
+                    oc_obj=oc_obj, force_clone=force_clone)
+            elif object_type == 'authprofile':
+                created_objs, warnings = self._process_authprofile(
+                    ap_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
+                    oc_obj=oc_obj, force_clone=force_clone)
             elif object_type == 'sslkeyandcertificate':
-                created_objs = self._process_sslkeyandcertificate(
-                    ss_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj,
-                    force_clone=force_clone)
+                created_objs, warnings = self._process_sslkeyandcertificate(
+                    ss_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
+                    oc_obj=oc_obj, force_clone=force_clone)
+            elif object_type == 'certificatemanagementprofile':
+                (created_objs,
+                 warnings) = self._process_certificatemanagementprofile(
+                    cm_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
+                    oc_obj=oc_obj, force_clone=force_clone)
 
-            # Try to create cloned object (possibly in a different tenant to the
-            # source object)
+            # Try to create cloned object (possibly in a different tenant to
+            # the source object)
 
             logger.debug('Creating %s "%s"...', object_type, new_name)
 
@@ -369,7 +391,7 @@ class AviClone:
                 logger.debug('Created %s "%s"', object_type, new_obj['url'])
                 if old_obj_url:
                     self.clone_track[old_obj_url] = new_obj['url']
-                return new_obj, created_objs
+                return new_obj, created_objs, warnings
             else:
                 exception_string = ('Unable to clone %s "%s" as "%s" (%d:%s)'
                                     % (object_type, old_name,
@@ -400,16 +422,25 @@ class AviClone:
 
         # If cloning to a different cloud, remove network references
 
-        if oc_obj:
+        if oc_obj or server_map:
             servers = p_obj.get('servers', [])
             for server in servers:
                 server.pop('vm_ref', None)
                 server.pop('nw_ref', None)
                 server.pop('external_uuid', None)
                 server.pop('discovered_networks', None)
+                server_ip = (server['ip'].get('addr', None)
+                             if 'ip' in server else None)
+                if server_map and server_ip:
+                    for map_spec in server_map:
+                        if server_ip == map_spec[0]:
+                            server['ip']['addr'] = map_spec[1]
+                            logger.debug('Mapped %s to %s', server_ip,
+                                         map_spec[1])
             p_obj.pop('networks', None)
 
         created_objs = []
+        warnings = []
 
         try:
             valid_ref_objects = self.VALID_POOL_REF_OBJECTS
@@ -417,13 +448,12 @@ class AviClone:
             # Process generic references, re-using or cloning referenced
             # objects as necessary
 
-            new_objs = self._process_refs(parent_obj=p_obj,
+            created_objs, warnings = self._process_refs(parent_obj=p_obj,
                                           refs=valid_ref_objects,
                                           t_obj=t_obj, ot_obj=ot_obj,
-                                          oc_obj=oc_obj, force_clone=force_clone,
+                                          oc_obj=oc_obj,
+                                          force_clone=force_clone,
                                           name=p_obj['name'])
-
-            created_objs.extend(list(new_objs))
 
             if oc_obj:
                 p_obj['cloud_ref'] = oc_obj['url']
@@ -440,7 +470,7 @@ class AviClone:
 
             raise
 
-        return created_objs
+        return created_objs, warnings
 
     def _process_poolgroup(self, pg_obj, t_obj, ot_obj, oc_obj, force_clone):
         """
@@ -453,6 +483,7 @@ class AviClone:
         new_pool_group_name = pg_obj['name']
 
         created_objs = []
+        warnings = []
 
         try:
             if 'members' in pg_obj:
@@ -463,15 +494,17 @@ class AviClone:
                         new_pool_name = '-'.join([new_pool_group_name,
                                                   'pool', str(count)])
 
-                        p_obj, p_created_objs = self.clone_object(
+                        p_obj, p_created_objs, p_warnings = self.clone_object(
                             old_name=p_path, new_name=new_pool_name,
                             t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj,
-                            force_clone=force_clone, force_unique_name=True)
+                            force_clone=force_clone, force_unique_name=True,
+                            server_map=server_map)
 
                         count += 1
 
                         created_objs.append(p_obj)
-                        created_objs.extend(list(p_created_objs))
+                        created_objs.extend(p_created_objs)
+                        warnings.extend(warnings)
 
                         # Update the pool with the cloned pool
 
@@ -489,10 +522,10 @@ class AviClone:
 
             raise
 
-        return created_objs
+        return created_objs, warnings
 
     def _process_httppolicyset(self, ps_obj, t_obj, ot_obj, oc_obj,
-                               force_clone):
+                               force_clone, server_map):
         """
         Performs httppolicyset-specific manipulations on the cloned object such
         as cloning pools and poolgroups used in the policy rules
@@ -503,6 +536,7 @@ class AviClone:
         new_httppolicyset_name = ps_obj['name']
 
         created_objs = []
+        warnings = []
 
         try:
             for policy_type in ['http_security_policy',
@@ -511,12 +545,14 @@ class AviClone:
                 policy_obj = ps_obj.get(policy_type, {})
                 if policy_obj:
                     logger.debug('Processing %s', policy_type)
-                    new_objs = self._process_policy_rules(
-                                     new_httppolicyset_name,
-                                     p_obj=policy_obj, t_obj=t_obj,
-                                     ot_obj=ot_obj, oc_obj=oc_obj,
-                                     force_clone=force_clone)
+                    new_objs, new_warnings = self._process_policy_rules(
+                                                 new_httppolicyset_name,
+                                                 p_obj=policy_obj, t_obj=t_obj,
+                                                 ot_obj=ot_obj, oc_obj=oc_obj,
+                                                 force_clone=force_clone,
+                                                 server_map=server_map)
                     created_objs.extend(new_objs)
+                    warnings.extend(new_warnings)
         except Exception as ex:
             # If an exception occurred, delete any intermediate objects we
             # have created
@@ -525,7 +561,7 @@ class AviClone:
 
             raise
 
-        return created_objs
+        return created_objs, warnings
 
     def _process_networksecuritypolicy(self, ns_obj, t_obj, ot_obj, oc_obj,
                                force_clone):
@@ -539,14 +575,15 @@ class AviClone:
         new_networksecuritypolicy_name = ns_obj['name']
 
         created_objs = []
+        warnings = []
 
         try:
-            new_objs = self._process_policy_rules(
-                                new_networksecuritypolicy_name,
-                                p_obj=ns_obj, t_obj=t_obj,
-                                ot_obj=ot_obj, oc_obj=oc_obj,
-                                force_clone=force_clone)
-            created_objs.extend(new_objs)
+            created_objs, warnings = self._process_policy_rules(
+                                            new_networksecuritypolicy_name,
+                                            p_obj=ns_obj, t_obj=t_obj,
+                                            ot_obj=ot_obj, oc_obj=oc_obj,
+                                            force_clone=force_clone)
+
         except Exception as ex:
             # If an exception occurred, delete any intermediate objects we
             # have created
@@ -555,7 +592,7 @@ class AviClone:
 
             raise
 
-        return created_objs
+        return created_objs, warnings
 
     def _process_dnspolicy(self, dp_obj, t_obj, ot_obj, oc_obj,
                                force_clone):
@@ -569,14 +606,15 @@ class AviClone:
         new_dnspolicy_name = dp_obj['name']
 
         created_objs = []
+        warnings = []
 
         try:
-            new_objs = self._process_policy_rules(
-                                new_dnspolicy_name,
-                                p_obj=dp_obj, t_obj=t_obj,
-                                ot_obj=ot_obj, oc_obj=oc_obj,
-                                force_clone=force_clone)
-            created_objs.extend(new_objs)
+            created_objs, warnings = self._process_policy_rules(
+                                                 new_dnspolicy_name,
+                                                 p_obj=dp_obj, t_obj=t_obj,
+                                                 ot_obj=ot_obj, oc_obj=oc_obj,
+                                                 force_clone=force_clone)
+
         except Exception as ex:
             # If an exception occurred, delete any intermediate objects we
             # have created
@@ -585,31 +623,66 @@ class AviClone:
 
             raise
 
-        return created_objs
+        return created_objs, warnings
 
-    def _process_wafpolicy(self, wp_obj, t_obj, ot_obj, oc_obj,
+    def _process_authprofile(self, ap_obj, t_obj, ot_obj, oc_obj,
                                force_clone):
         """
-        Performs wafpolicy-specific manipulations on the cloned
-        object such as wafprofile
+        Performs authprofile-specific manipulations on the cloned
+        object
         """
 
-        logger.debug('Running _process_wafpolicy')
+        logger.debug('Running _process_authprofile')
 
-        valid_ref_objects = self.VALID_WAFPOLICY_REF_OBJECTS
-        
         created_objs = []
+        warnings = []
+
+        if 'ldap' in ap_obj:
+            ldap_obj = ap_obj['ldap']
+            if 'settings' in ldap_obj:
+                ldap_obj['settings']['password'] = 'dummy'
+                warnings.append('The LDAP password referenced in authprofile '
+                                '%s cannot be cloned and must be re-entered '
+                                'manually.' % ap_obj['name'])
+        if 'tacacs_plus' in ap_obj:
+            ap_obj['tacacs_plus']['password'] = 'dummy'
+            warnings.append('The TACACS password referenced in authprofile '
+                            '%s cannot be cloned and must be re-entered '
+                            'manually.' % ap_obj['name'])
+
+        return created_objs, warnings
+
+    def _process_sslkeyandcertificate(self, ss_obj, t_obj, ot_obj, oc_obj,
+                                      force_clone):
+        """
+        Performs sslkeyandcertificate-specific manipulations on the cloned
+        object
+        """
+
+        logger.debug('Running _process_sslkeyandcertificate')
+
+        created_objs = []
+        warnings = []
 
         try:
+            if ot_obj:
+                # Remove cross-tenant references
+                logger.debug('Removing ca_certs references')
+                ss_obj.pop('ca_certs', None)
+                ss_obj.pop('key_base64', None)
+                ss_obj.pop('certificate_base64', None)
+
+            valid_ref_objects = self.VALID_SSLCERT_REF_OBJECTS
+
             # Process generic references, re-using or cloning referenced
             # objects as necessary
 
-            new_objs = self._process_refs(parent_obj=wp_obj,
+            created_objs, warnings = self._process_refs(parent_obj=ss_obj,
                                           refs=valid_ref_objects,
                                           t_obj=t_obj, ot_obj=ot_obj,
-                                          oc_obj=oc_obj, force_clone=force_clone)
+                                          oc_obj=oc_obj,
+                                          force_clone=force_clone)
 
-            created_objs.extend(list(new_objs))
         except Exception as ex:
             # If an exception occurred, delete any intermediate objects we
             # have created
@@ -618,10 +691,44 @@ class AviClone:
 
             raise
 
-        return created_objs
+        return created_objs, warnings
+
+    def _process_certificatemanagementprofile(self, cm_obj, t_obj,
+                                              ot_obj, oc_obj,
+                                              force_clone):
+        """
+        Performs certificatemanagementobject-specific manipulations on the
+        cloned object
+        """
+
+        logger.debug('Running _process_certificatemanagementprofile')
+
+        created_objs = []
+        warnings = []
+
+        try:
+            if 'script_params' in cm_obj:
+                for par in cm_obj['script_params']:
+                    if par['is_sensitive']:
+                        par['value'] = 'dummy'
+                        warnings.append(
+                            'A sensitive script parameter (%s) in '
+                            'certificate management profile %s cannot '
+                            'be cloned and must be re-entered '
+                            'manually.' % (par['name'], cm_obj['name']))
+
+        except Exception as ex:
+            # If an exception occurred, delete any intermediate objects we
+            # have created
+
+            self._delete_created_objs(created_objs, ot_obj['uuid'])
+
+            raise
+
+        return created_objs, warnings
 
     def _process_policy_rules(self, new_policy_name, p_obj, t_obj, ot_obj,
-                              oc_obj, force_clone):
+                              oc_obj, force_clone, server_map=None):
         """
         Process the network/DNS/HTTP policy rules
         """
@@ -632,6 +739,7 @@ class AviClone:
 
         try:
             created_objs = []
+            warnings = []
 
             rules = p_obj.get('rules', [])
             for rule in rules:
@@ -643,13 +751,13 @@ class AviClone:
                                          valid_ref_objects.items()
                                          if key in force_clone]
 
-                        new_objs = self._clone_refs(parent_obj=m_obj,
-                                                    refs=refs_to_clone,
-                                                    t_obj=t_obj, ot_obj=ot_obj,
-                                                    oc_obj=oc_obj,
-                                                    name=new_policy_name)
+                        new_objs, new_warnings = self._clone_refs(
+                            parent_obj=m_obj, refs=refs_to_clone,
+                            t_obj=t_obj, ot_obj=ot_obj,
+                            oc_obj=oc_obj, name=new_policy_name)
 
-                        created_objs.extend(list(new_objs))
+                        created_objs.extend(new_objs)
+                        warnings.extend(new_warnings)
 
                         # If moving to a different tenant, clone any
                         # tenant-specific referenced objects
@@ -658,11 +766,13 @@ class AviClone:
                             refs_to_clone = [ref for key, ref in
                                              valid_ref_objects.items()
                                              if key not in force_clone]
-                            new_objs = self._clone_refs_to_tenant(
+                            (new_objs,
+                             new_warnings) = self._clone_refs_to_tenant(
                                    parent_obj=m_obj, refs=refs_to_clone,
                                    t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj)
 
-                            created_objs.extend(list(new_objs))
+                            created_objs.extend(new_objs)
+                            warnings.extend(new_warnings)
 
                 if 'switching_action' in rule:
                     switching_action = rule.get('switching_action', {})
@@ -683,13 +793,16 @@ class AviClone:
 
                             p_path = pool_ref.split('/api/')[1]
                             p_name = '-'.join([new_policy_name, 'pool'])
-                            p_obj, p_created_objs = self.clone_object(
+                            (p_obj, p_created_objs,
+                             p_warnings) = self.clone_object(
                                 old_name=p_path, new_name=p_name,
                                 t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj,
                                 force_clone=force_clone,
-                                force_unique_name=True)
+                                force_unique_name=True,
+                                server_map=server_map)
                             created_objs.append(p_obj)
                             created_objs.extend(p_created_objs)
+                            warnings.extend(p_warnings)
                             p_obj_url = p_obj['url']
 
                         switching_action['pool_ref'] = p_obj_url
@@ -712,13 +825,16 @@ class AviClone:
                             pg_path = pool_group_ref.split('/api/')[1]
                             pg_name = '-'.join([new_policy_name,
                                                 'poolgroup'])
-                            pg_obj, pg_created_objs = self.clone_object(
+                            (pg_obj, pg_created_objs,
+                             pg_warnings) = self.clone_object(
                                 old_name=pg_path, new_name=pg_name,
                                 t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj,
                                 force_clone=force_clone,
-                                force_unique_name=True)
+                                force_unique_name=True,
+                                server_map=server_map)
                             created_objs.append(pg_obj)
                             created_objs.extend(pg_created_objs)
+                            warnings.extend(pg_warnings)
                             pg_obj_url = pg_obj['url']
 
                         switching_action['pool_group_ref'] = pg_obj_url
@@ -730,10 +846,10 @@ class AviClone:
 
             raise
 
-        return created_objs
+        return created_objs, warnings
 
     def _process_vsdatascriptset(self, ds_obj, t_obj, ot_obj, oc_obj,
-                               force_clone):
+                               force_clone, server_map):
         """
         Performs datascript-specific manipulations on the cloned object such
         as cloning pools, pool groups, string groups, ip groups referenced
@@ -745,6 +861,7 @@ class AviClone:
         new_vsdatascriptset_name = ds_obj['name']
 
         created_objs = []
+        warnings = []
 
         try:
             if 'pool_refs' in ds_obj:
@@ -761,14 +878,16 @@ class AviClone:
 
                         p_path = pool_ref.split('/api/')[1]
                         p_name = '-'.join([ds_obj['name'], 'pool'])
-                        p_obj, p_created_objs = self.clone_object(
+                        p_obj, p_created_objs, p_warnings = self.clone_object(
                             old_name=p_path, new_name=p_name,
                             t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj,
                             force_clone=force_clone,
-                            force_unique_name=True)
+                            force_unique_name=True,
+                            server_map=server_map)
 
                         created_objs.append(p_obj)
                         created_objs.extend(p_created_objs)
+                        warnings.extend(p_warnings)
                         p_obj_url = p_obj['url']
 
                     ds_obj['pool_refs'][index] = p_obj_url
@@ -786,14 +905,17 @@ class AviClone:
                     else:
                         pg_path = pool_group_ref.split('/api/')[1]
                         pg_name = '-'.join([ds_obj['name'], 'poolgroup'])
-                        pg_obj, pg_created_objs = self.clone_object(
+                        (pg_obj, pg_created_objs,
+                         pg_warnings) = self.clone_object(
                             old_name=pg_path, new_name=pg_name,
                             t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj,
                             force_clone=force_clone,
-                            force_unique_name=True)
+                            force_unique_name=True,
+                            server_map=server_map)
 
                         created_objs.append(pg_obj)
                         created_objs.extend(pg_created_objs)
+                        warnings.extend(pg_warnings)
                         pg_obj_url = pg_obj['url']
 
                     ds_obj['pool_group_refs'][index] = pg_obj_url
@@ -803,12 +925,14 @@ class AviClone:
             # Process generic references, re-using or cloning referenced
             # objects as necessary
 
-            new_objs = self._process_refs(parent_obj=ds_obj,
+            new_objs, new_warnings = self._process_refs(parent_obj=ds_obj,
                                           refs=valid_ref_objects,
                                           t_obj=t_obj, ot_obj=ot_obj,
-                                          oc_obj=oc_obj, force_clone=force_clone)
+                                          oc_obj=oc_obj,
+                                          force_clone=force_clone)
 
-            created_objs.extend(list(new_objs))
+            created_objs.extend(new_objs)
+            warnings.extend(new_warnings)
 
         except Exception as ex:
             # If an exception occurred, delete any intermediate objects we
@@ -818,7 +942,7 @@ class AviClone:
 
             raise
 
-        return created_objs
+        return created_objs, warnings
 
     def _process_applicationprofile(self, ap_obj, t_obj, ot_obj, oc_obj,
                                force_clone):
@@ -830,9 +954,10 @@ class AviClone:
 
         logger.debug('Running _process_applicationprofile')
 
-        created_objs = []
-
         valid_ref_objects = self.VALID_APPLICATIONPROFILE_REF_OBJECTS
+
+        created_objs = []
+        warnings = []
 
         try:
             http_profile = ap_obj.get('http_profile', {})
@@ -840,20 +965,20 @@ class AviClone:
 
             if comp_profile:
                 filters = comp_profile.get('filter', [])
-                for filter in filters:
-                    logger.debug('Checking filter "%s"...', filter['name'])
+                for filt in filters:
+                    logger.debug('Checking filter "%s"...', filt['name'])
 
                     refs_to_clone = [ref for key, ref in
                                      valid_ref_objects.items()
                                      if key in force_clone]
 
-                    new_objs = self._clone_refs(parent_obj=filter,
-                                                refs=refs_to_clone,
-                                                t_obj=t_obj, ot_obj=ot_obj,
-                                                oc_obj=oc_obj,
-                                                name=ap_obj['name'])
+                    new_objs, new_warnings = self._clone_refs(
+                        parent_obj=filt, refs=refs_to_clone,
+                        t_obj=t_obj, ot_obj=ot_obj,
+                        oc_obj=oc_obj, name=ap_obj['name'])
 
-                    created_objs.extend(list(new_objs))
+                    created_objs.extend(new_objs)
+                    warnings.extend(new_warnings)
 
                     # If moving to a different tenant, clone any
                     # tenant-specific referenced objects
@@ -862,21 +987,23 @@ class AviClone:
                         refs_to_clone = [ref for key, ref in
                                          valid_ref_objects.items()
                                          if key not in force_clone]
-                        new_objs = self._clone_refs_to_tenant(
-                                parent_obj=filter, refs=refs_to_clone,
+                        new_objs, new_warnings = self._clone_refs_to_tenant(
+                                parent_obj=filt, refs=refs_to_clone,
                                 t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj)
 
-                        created_objs.extend(list(new_objs))
+                        created_objs.extend(new_objs)
+                        warnings.extend(new_warnings)
 
             # Process generic references, re-using or cloning referenced
             # objects as necessary
 
-            new_objs = self._process_refs(parent_obj=ap_obj,
-                                          refs=valid_ref_objects,
-                                          t_obj=t_obj, ot_obj=ot_obj,
-                                          oc_obj=oc_obj, force_clone=force_clone)
+            new_objs, new_warnings = self._process_refs(
+                parent_obj=ap_obj, refs=valid_ref_objects,
+                t_obj=t_obj, ot_obj=ot_obj,
+                oc_obj=oc_obj, force_clone=force_clone)
 
-            created_objs.extend(list(new_objs))
+            created_objs.extend(new_objs)
+            warnings.extend(new_warnings)
 
         except Exception as ex:
             # If an exception occurred, delete any intermediate objects we
@@ -886,34 +1013,7 @@ class AviClone:
 
             raise
 
-        return created_objs
-
-    def _process_sslkeyandcertificate(self, ss_obj, t_obj, ot_obj, oc_obj,
-                               force_clone):
-        """
-        Performs sslkeyandcertificate-specific manipulations
-        """
-        
-        logger.debug('Running _process_sslkeyandcertificate')
-
-        created_objs = []
-
-        try:
-            if ot_obj:
-                logger.debug('Removing ca_certs references')
-                ss_obj.pop('ca_certs', None)
-                ss_obj.pop('key_base64', None)
-                ss_obj.pop('certificate_base64', None)
-                    
-        except Exception as ex:
-            # If an exception occurred, delete any intermediate objects we
-            # have created
-
-            self._delete_created_objs(created_objs, ot_obj['uuid'])
-
-            raise
-
-        return created_objs
+        return created_objs, warnings
 
     def _process_refs(self, parent_obj, refs, t_obj, ot_obj,
                       oc_obj, force_clone, name=None):
@@ -922,6 +1022,7 @@ class AviClone:
         # a force_clone list
 
         created_objs = []
+        warnings = []
 
         try:
 
@@ -932,12 +1033,13 @@ class AviClone:
             refs_to_clone = [ref for key, ref in refs.items()
                              if key in force_clone]
 
-            new_objs = self._clone_refs(parent_obj=parent_obj,
+            new_objs, new_warnings = self._clone_refs(parent_obj=parent_obj,
                                         refs=refs_to_clone,
                                         t_obj=t_obj, ot_obj=ot_obj,
                                         oc_obj=oc_obj, name=name)
 
-            created_objs.extend(list(new_objs))
+            created_objs.extend(new_objs)
+            warnings.extend(new_warnings)
 
             # If moving to a different tenant, clone any tenant-specific
             # referenced objects
@@ -945,14 +1047,12 @@ class AviClone:
             if ot_obj or self.api != self.dest_api:
                 refs_to_clone = [ref for key, ref in refs.items()
                                  if key not in force_clone]
-                new_objs = self._clone_refs_to_tenant(parent_obj=parent_obj,
-                                                      refs=refs_to_clone,
-                                                      t_obj=t_obj,
-                                                      ot_obj=ot_obj,
-                                                      oc_obj=oc_obj,
-                                                      name=name)
+                new_objs, new_warnings = self._clone_refs_to_tenant(
+                    parent_obj=parent_obj, refs=refs_to_clone,
+                    t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj, name=name)
 
-                created_objs.extend(list(new_objs))
+                created_objs.extend(new_objs)
+                warnings.extend(new_warnings)
 
         except Exception as ex:
             # If an exception occurred, delete any intermediate objects we
@@ -962,7 +1062,7 @@ class AviClone:
 
             raise
 
-        return created_objs
+        return created_objs, warnings
 
     def _clone_refs(self, parent_obj, refs, t_obj, ot_obj, oc_obj, name=None):
 
@@ -977,6 +1077,7 @@ class AviClone:
                      (' for %s' % parent_obj_name if parent_obj_name else ''))
 
         created_objs = []
+        warnings = []
 
         try:
             for ref_str in refs:
@@ -1004,13 +1105,16 @@ class AviClone:
                             r_obj_type = r_obj_path.split('/')[0]
                             r_obj_name = '-'.join([parent_obj_name,
                                                    r_obj_type])
-                            new_r_obj, r_created_objs = self.clone_object(
+                            (new_r_obj, r_created_objs,
+                             r_warnings) = self.clone_object(
                                 old_name=r_obj_path, new_name=r_obj_name,
                                 t_obj=t_obj, ot_obj=ot_obj, oc_obj=oc_obj,
-                                force_clone=force_clone, force_unique_name=True)
+                                force_clone=force_clone,
+                                force_unique_name=True)
 
                             created_objs.append(new_r_obj)
                             created_objs.extend(r_created_objs)
+                            warnings.extend(r_warnings)
                             new_r_obj_url = new_r_obj['url']
 
                         if is_list:
@@ -1027,7 +1131,7 @@ class AviClone:
 
             raise
 
-        return created_objs
+        return created_objs, warnings
 
     def _clone_refs_to_tenant(self, parent_obj, refs, t_obj, ot_obj, oc_obj,
                               name=None):
@@ -1047,6 +1151,7 @@ class AviClone:
         otenant_uuid = ot_obj['uuid'] if ot_obj else None
 
         created_objs = []
+        warnings = []
 
         try:
             for ref_str in refs:
@@ -1072,18 +1177,33 @@ class AviClone:
 
                         r_obj = self.dest_api.get(r_obj_path,
                                                   tenant_uuid=otenant_uuid)
+                        r_obj_status = r_obj.status_code
 
-                        if (r_obj_type == 'sslkeyandcertificate' or
-                            r_obj.status_code == 404):
+                        if (r_obj_status == 200 and
+                            r_obj_type == 'sslkeyandcertificate' and
+                            'adminssl' not in self.flags):
+                            # sslkeyandcertificate requires special treatment
+                            # as sslkeyandcertificate objects in the admin
+                            # tenant are readable in other tenants but may not
+                            # be usable due to cross-tenant restrictions
+                            # (depending on Avi version and configuration)
+                            #
+                            # By default, always clone sslkeyandcertificate
+                            # if the source object is in the admin tenant
+                            # but can be overridden with 'adminssl' flag
+
+                            tenant_ref = r_obj.json()['tenant_ref']
+                            check_t_obj = self.dest_api.get(
+                                            tenant_ref.split('/api/')[1]).json()
+                            if check_t_obj['name'] == 'admin':
+                                r_obj_status = 404
+
+                        if r_obj_status == 404:
                             logger.debug('Referenced object not available in '
                                          'target (%s)', r_obj_path)
                             # If not global, check for an object of the same
-                            # name in the target tenant context.
-                            #
-                            # sslkeyandcertificate requires special treatment
-                            # as sslkeyandcertificate objects in the admin
-                            # tenant are readable in other tenants but cannot
-                            # be used due to cross-tenant restrictions.
+                            # name in the target tenant context
+
 
                             if r_obj_path in self.clone_track:
                                 # Re-use previously cloned object if
@@ -1110,15 +1230,16 @@ class AviClone:
                                     # Otherwise clone the object to the target
                                     # tenant context
 
-                                    (new_r_obj,
-                                     r_created_objs) = self.clone_object(
-                                                     old_name=r_obj_path,
-                                                     new_name=old_r_obj['name'],
-                                                     t_obj=t_obj, ot_obj=ot_obj,
-                                                     oc_obj=oc_obj,
-                                                     force_unique_name=True)
+                                    (new_r_obj, r_created_objs,
+                                     r_warnings) = self.clone_object(
+                                                    old_name=r_obj_path,
+                                                    new_name=old_r_obj['name'],
+                                                    t_obj=t_obj, ot_obj=ot_obj,
+                                                    oc_obj=oc_obj,
+                                                    force_unique_name=True)
                                     created_objs.append(new_r_obj)
                                     created_objs.extend(r_created_objs)
+                                    warnings.extend(r_warnings)
                                     new_r_obj_url = new_r_obj['url']
 
                             if is_list:
@@ -1133,13 +1254,13 @@ class AviClone:
 
             raise
 
-        return created_objs
+        return created_objs, warnings
 
     def clone_vs(self, old_vs_name, new_vs_name, enable_vs=False,
                  new_vs_vips=None, new_vs_v6vips=None, new_vs_fips=None,
                  new_fqdns=None, new_segroup=None, tenant=None,
                  other_tenant=None, other_cloud=None, force_clone=None,
-                 use_internal_ipam=False):
+                 use_internal_ipam=False, server_map=None):
 
         """
         Clones a virtual service object
@@ -1239,16 +1360,39 @@ class AviClone:
             # addresses and allow auto_allocate_ip to do the work. Otherwise
             # build a new array of VIPs.
 
-            # For versions prior to 17.1, only a single VIP is supported, and
-            # this case (detected by the absence of the 'vips' attribute),
-            # only populate the first VIP.
+            if 'vsvip_ref' in v_obj:
+                # vsvip object is used
+
+                new_vsvip_name = 'vsvip-%s-%s' % (new_vs_name,
+                                                  other_cloud if other_cloud
+                                                  else c_obj['name'])
+
+                new_vsvip_name = self.get_new_name('vsvip', new_vsvip_name,
+                                                   otenant_uuid, True)
+
+                vsvip_obj = self.api.get(
+                                v_obj['vsvip_ref'].split('/api/')[1]).json()
+
+                vsvip_obj.pop('uuid', None)
+                vsvip_obj.pop('url', None)
+                vsvip_obj['name'] = new_vsvip_name
+                if oc_obj:
+                    vsvip_obj['cloud_ref'] = oc_obj['url']
+                v_obj.pop('vip', None)
+                v_obj.pop('dns_info', None)
+                v_obj.pop('vsvip_ref', None)
+            else:
+                # No vsvip object (version < 17.1) - only a single VIP is
+                # supported so VIP is in virtual service object and there
+                # is only one
+
+                vsvip_obj = None
 
             if new_vs_vips == ['*']:
                 # Use auto-allocation from the same subnets as the source
                 # VS (IPv4 and IPv6)
 
-                v_obj.pop('vsvip_ref', None)
-                for vip in v_obj['vip'] if 'vip' in v_obj else [v_obj]:
+                for vip in vsvip_obj['vip'] if vsvip_obj else [v_obj]:
                     vip.pop('port_uuid', None)
                     if vip['auto_allocate_ip'] is True:
                         vip.pop('ip_address', None)
@@ -1264,10 +1408,8 @@ class AviClone:
                 if len(new_vs_vips) != len(new_vs_v6vips):
                     raise Exception('Number of V4 and V6 VIPs should match.')
 
-                if 'vip' in v_obj:
-                    v_obj.pop('vip', None)
-                    v_obj.pop('vsvip_ref', None)
-                    v_obj['vip'] = []
+                if vsvip_obj:
+                    vsvip_obj['vip'] = []
                     for c, (new_vs_vip,
                             new_vs_fip,
                             new_vs_v6vip) in enumerate(zip(new_vs_vips,
@@ -1305,10 +1447,9 @@ class AviClone:
                                 # New VIP is a subnet for auto-allocation
 
                                 new_vip['auto_allocate_ip'] = True
-                                if new_vs_vip:
-                                    new_vip['auto_allocate_ip_type'] = 'V4_V6'
-                                else:
-                                    new_vip['auto_allocate_ip_type'] = 'V6_ONLY'
+                                new_vip['auto_allocate_ip_type'] = (
+                                    'V4_V6' if new_vs_vip else 'V6_ONLY')
+
                                 subnet = new_vs_v6vip.split('/')
                                 if use_internal_ipam:
                                     new_vip['ipam_network_subnet'] = {
@@ -1342,7 +1483,7 @@ class AviClone:
                         else:
                             new_vip['auto_allocate_floating_ip'] = False
 
-                        v_obj['vip'].append(new_vip)
+                        vsvip_obj['vip'].append(new_vip)
                 else:
                     if '/' in new_vs_vips[0]:
                         # New VIP is a subnet for auto-allocation
@@ -1383,18 +1524,20 @@ class AviClone:
             # Allocate new FQDNs or create a single FQDN derived from the first
             # FQDN, replacing the hostname part with the new VS name
 
+            dns_info_obj = vsvip_obj or v_obj
+
             if new_fqdns == ['*']:
-                if 'dns_info' in v_obj:
-                    new_fqdn = new_vs_name + '.' + v_obj['dns_info'][0][
+                if 'dns_info' in dns_info_obj:
+                    new_fqdn = new_vs_name + '.' + dns_info_obj['dns_info'][0][
                                 'fqdn'].split('.', 1)[1]
-                    v_obj['dns_info'] = [{'type': 'DNS_RECORD_A',
+                    dns_info_obj['dns_info'] = [{'type': 'DNS_RECORD_A',
                                            'fqdn': new_fqdn}]
             else:
                 if new_fqdns != [None]:
-                    v_obj['dns_info'] = [{'type': 'DNS_RECORD_A',
+                    dns_info_obj['dns_info'] = [{'type': 'DNS_RECORD_A',
                                     'fqdn': new_fqdn} for new_fqdn in new_fqdns]
                 else:
-                    v_obj.pop('dns_info', None)
+                    dns_info_obj.pop('dns_info', None)
 
             # Clone the pool/pool group used by the VS
 
@@ -1402,13 +1545,14 @@ class AviClone:
                 p_path = v_obj['pool_ref'].split('/api/')[1]
                 p_name = '-'.join([new_vs_name, 'pool'])
 
-                p_obj, p_created_objs = self.clone_object(
+                p_obj, p_created_objs, p_warnings = self.clone_object(
                     old_name=p_path, new_name=p_name, t_obj=t_obj,
                     ot_obj=ot_obj, oc_obj=oc_obj, force_clone=force_clone,
-                    force_unique_name=True)
+                    force_unique_name=True, server_map=server_map)
 
                 created_objs.append(p_obj)
-                created_objs.extend(list(p_created_objs))
+                created_objs.extend(p_created_objs)
+                warnings.extend(p_warnings)
 
                 # Update the pool with the cloned pool
 
@@ -1418,13 +1562,14 @@ class AviClone:
                 pg_path = v_obj['pool_group_ref'].split('/api/')[1]
                 pg_name = '-'.join([new_vs_name, 'poolgroup'])
 
-                pg_obj, pg_created_objs = self.clone_object(
+                pg_obj, pg_created_objs, pg_warnings = self.clone_object(
                     old_name=pg_path, new_name=pg_name, t_obj=t_obj,
                     ot_obj=ot_obj, oc_obj=oc_obj, force_clone=force_clone,
-                    force_unique_name=True)
+                    force_unique_name=True, server_map=server_map)
 
                 created_objs.append(pg_obj)
-                created_objs.extend(list(pg_created_objs))
+                created_objs.extend(pg_created_objs)
+                warnings.extend(pg_warnings)
 
                 # Update the pool group with the cloned pool group
 
@@ -1463,6 +1608,8 @@ class AviClone:
                 # to the default global VRF in the target cloud
 
                 v_obj.pop('vrf_context_ref', None)
+                if vsvip_obj:
+                    vsvip_obj.pop('vrf_context_ref', None)
 
             if new_segroup is not None:
                 # Locate SE group by name in the appropriate cloud
@@ -1497,14 +1644,15 @@ class AviClone:
                                          if oc_obj is None
                                          else oc_obj['name']),
                                         'HTTP-Policy-Set'])
-                    ps_obj, ps_created_objs = self.clone_object(
+                    ps_obj, ps_created_objs, ps_warnings = self.clone_object(
                         old_name=ps_path, new_name=ps_name, t_obj=t_obj,
                         ot_obj=ot_obj, oc_obj=oc_obj, force_clone=force_clone,
-                        force_unique_name=True)
+                        force_unique_name=True, server_map=server_map)
 
                     polset['http_policy_set_ref'] = ps_obj['url']
                     created_objs.append(ps_obj)
-                    created_objs.extend(list(ps_created_objs))
+                    created_objs.extend(ps_created_objs)
+                    warnings.extend(ps_warnings)
 
             # Clone any DNS policy sets referenced in the VS
 
@@ -1516,14 +1664,15 @@ class AviClone:
                                          if oc_obj is None
                                          else oc_obj['name']),
                                         'DNS-Policy'])
-                    ps_obj, ps_created_objs = self.clone_object(
+                    ps_obj, ps_created_objs, ps_warnings = self.clone_object(
                         old_name=ps_path, new_name=ps_name, t_obj=t_obj,
                         ot_obj=ot_obj, oc_obj=oc_obj, force_clone=force_clone,
-                        force_unique_name=True)
+                        force_unique_name=True, server_map=server_map)
 
                     polset['dns_policy_ref'] = ps_obj['url']
                     created_objs.append(ps_obj)
-                    created_objs.extend(list(ps_created_objs))
+                    created_objs.extend(ps_created_objs)
+                    warnings.extend(ps_warnings)
 
             # Clone network security policy referenced in the VS
 
@@ -1534,14 +1683,15 @@ class AviClone:
                                          if oc_obj is None
                                          else oc_obj['name']),
                                         'ns'])
-                ns_obj, ns_created_objs = self.clone_object(
+                ns_obj, ns_created_objs, ns_warnings = self.clone_object(
                         old_name=ns_path, new_name=ns_name, t_obj=t_obj,
                         ot_obj=ot_obj, oc_obj=oc_obj, force_clone=force_clone,
-                        force_unique_name=True)
+                        force_unique_name=True, server_map=server_map)
 
                 v_obj['network_security_policy_ref'] = ns_obj['url']
                 created_objs.append(ns_obj)
-                created_objs.extend(list(ns_created_objs))
+                created_objs.extend(ns_created_objs)
+                warnings.extend(ns_warnings)
 
             # Clone any datascripts referenced in the VS
 
@@ -1552,15 +1702,16 @@ class AviClone:
                                                       if oc_obj is None
                                                       else oc_obj['name']),
                                         'DataScript-Set'])
-                    ds_obj, ds_created_objs = self.clone_object(
+                    ds_obj, ds_created_objs, ds_warnings = self.clone_object(
                         old_name=ds_path, new_name=ds_name, t_obj=t_obj,
                         ot_obj=ot_obj, oc_obj=oc_obj, force_clone=force_clone,
-                        force_unique_name=True)
+                        force_unique_name=True, server_map=server_map)
 
                     dsset['vs_datascript_set_ref'] = ds_obj['url']
 
                     created_objs.append(ds_obj)
-                    created_objs.extend(list(ds_created_objs))
+                    created_objs.extend(ds_created_objs)
+                    warnings.extend(ds_warnings)
 
                     if ds_created_objs:
                         warnings.append('VS contains DataScripts with '
@@ -1574,12 +1725,36 @@ class AviClone:
             # Process generic references, re-using or cloning referenced
             # objects as necessary
 
-            new_objs = self._process_refs(parent_obj=v_obj,
+            new_objs, new_warnings = self._process_refs(parent_obj=v_obj,
                                           refs=valid_ref_objects,
                                           t_obj=t_obj, ot_obj=ot_obj,
-                                          oc_obj=oc_obj, force_clone=force_clone)
+                                          oc_obj=oc_obj,
+                                          force_clone=force_clone)
 
-            created_objs.extend(list(new_objs))
+            created_objs.extend(new_objs)
+            warnings.extend(new_warnings)
+
+            # Create new vsvip object if needed
+
+            if vsvip_obj:
+                r = self.dest_api.post('vsvip', vsvip_obj,
+                                       tenant_uuid=otenant_uuid)
+                if r.status_code < 300:
+                    new_vsvip_obj = r.json()
+                    logger.debug('Created vsvip "%s"', new_vsvip_obj['url'])
+                else:
+                    exception_string = ('Unable to create vsvip "%s" (%d:%s)'
+                                        % (vsvip_obj['name'], r.status_code,
+                                        r.text))
+                    logger.debug(exception_string)
+                    logger.debug(vsvip_obj)
+                    raise Exception(exception_string)
+                created_objs.append(new_vsvip_obj)
+                self.actions += ['Cloned vsvip "%s"%s'
+                                 % (new_vsvip_obj['name'],
+                                    (' in tenant "%s"' % other_tenant)
+                                    if other_tenant else '')]
+                v_obj['vsvip_ref'] = new_vsvip_obj['url']
 
             # Try to create the new VS (possibly in a different tenant to the
             # source)
@@ -1598,6 +1773,10 @@ class AviClone:
                                  (' in cloud "%s"' % oc_obj['name'])
                                   if oc_obj else '')]
                 logger.debug('Created virtual service "%s"', new_vs['url'])
+                if new_vsvip_obj:
+                    # No need to track new vsvip object for deletion if VS was
+                    # created successfully
+                    created_objs.remove(new_vsvip_obj)
                 if v_obj_old_url:
                     self.clone_track[v_obj_old_url] = new_vs['url']
                 return new_vs, created_objs, warnings
@@ -1679,14 +1858,23 @@ if __name__ == '__main__':
         * Cloning a VS and child objects within a tenant:
         
         clone_vs.py -c controller.acme.com -x 17.2.9 vs
-        example cloned-example
+        example cloned-example -v 10.10.10.2
         
         
         * Cloning a VS and child objects to a different tenant:
         
         clone_vs.py -c controller.acme.com -x 17.2.9 vs
         example cloned-example -t tenant1 -2t tenant2
+        -v 10.10.10.2
         
+
+        * Cloning a VS and child objects to a different tenant and
+        cloud with auto-allocation of VIP:
+
+        clone_vs.py -c controller.acme.com -x 17.2.9 vs
+        example cloned-example -t tenant1 -2t tenant2
+        -2c Second-Cloud -v 10.10.10.0/24
+
         
         * Cloning a VS but forcing health monitors and application
         profiles to be cloned rather than re-used in the cloned VS:
@@ -1707,7 +1895,7 @@ if __name__ == '__main__':
         specifying auto-allocation for VIPs by subnet in 3 AZs:
 
         clone_vs.py -c controller1.acme.com -dc controller2.acme.com
-        -x 17.2.9 example cloned-example
+        -x 17.2.9 vs example cloned-example
         -v 10.0.0.0/24,10.1.0.0/24,10.2.0.0/24
         -t tenant -2t tenant -2c AWS-Cloud
 
@@ -1715,7 +1903,7 @@ if __name__ == '__main__':
         * As above but also with elastic IP allocation:
 
         clone_vs.py -c controller1.acme.com -dc controller2.acme.com
-        -x 17.2.9 example cloned-example
+        -x 17.2.9 vs example cloned-example
         -v 10.0.0.0/24,10.1.0.0/24,10.2.0.0/24;auto,auto,auto
         -t tenant -2t tenant -2c AWS-Cloud
 
@@ -1723,20 +1911,26 @@ if __name__ == '__main__':
         * Cloning a VS in 18.1 and above with a static IPv4 and IPv6
         address:
 
-        clone_vs.py -c controller1.acme.com -x 18.1.2 example cloned-example
+        clone_vs.py -c controller1.acme.com -x 18.1.2 vs example cloned-example
         -v 10.0.0.10 -v6 fd00:dead:beef:bad:f00d::10
 
 
         * Cloning a VS in 18.1 with new auto-allocation for IPv4 and IPv6:
 
-        clone_vs.py -c controller1.acme.com -x 18.1.2 example cloned-example
+        clone_vs.py -c controller1.acme.com -x 18.1.2 vs example cloned-example
         -v 10.0.0.0/16 -v6 fd00:dead:beef:bad:f00d::/64
 
         If the object to be cloned uses features specific to a
         particular minimum Avi Vantage s/w release, it may be
         necessary to specify the API version using the -x parameter.
         
-        Some known limitations:
+        Some known limitations and caveats:
+
+        * Depending on the version of Avi Vantage and configuration, it may
+        be possible for a VS in a non-admin tenant to reference and use SSL
+        certificates in the admin tenant. However by default, this script will
+        instead clone certificates to the target tenant. This behaviour can
+        be enabled with the option -flags adminssl
         
         * Cloning a VS to a cloud of a different type to the source
         cloud is more likely to fail as it may reference shared
@@ -1767,10 +1961,11 @@ if __name__ == '__main__':
            set(AviClone.VALID_POOL_REF_OBJECTS.keys()) |
            set(AviClone.VALID_POLICYSET_REF_OBJECTS.keys()) |
            set(AviClone.VALID_DATASCRIPT_REF_OBJECTS.keys()) |
-           set(AviClone.VALID_APPLICATIONPROFILE_REF_OBJECTS.keys()))
+           set(AviClone.VALID_APPLICATIONPROFILE_REF_OBJECTS.keys()) |
+           set(AviClone.VALID_SSLCERT_REF_OBJECTS.keys()))
     vs_valid_refs = sorted(set(pool_valid_refs) |
                            set(AviClone.VALID_VS_REF_OBJECTS.keys()) |
-                           set(AviClone.VALID_WAFPOLICY_REF_OBJECTS))
+                           set(AviClone.VALID_WAFPOLICY_REF_OBJECTS.keys()))
 
     parser = argparse.ArgumentParser(
                         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1796,6 +1991,8 @@ if __name__ == '__main__':
                                         'for user input and then deletes '
                                         'the created objects',
                         action='store_true')
+    parser.add_argument('-flags', help='Comma-separated list of special flags.',
+                        default='')
     type_parser = parser.add_subparsers(help='Type of object to clone',
                                 metavar='object_type', dest='obj_type')
     vs_parser = type_parser.add_parser('vs', help='Clone a Virtual Service')
@@ -1809,7 +2006,6 @@ if __name__ == '__main__':
     vs_parser.add_argument('-v6', '--v6vips',
           help='The new IP V6 VIP or list of VIPs '
           'or auto or subnet/mask for auto-allocation', metavar='V6VIPs')
-
     vs_parser.add_argument('-int', '--internalipam',
           help='For auto-allocation specifying subnet/mask, allocate '
                'from internal Avi IPAM/Infoblox, e.g. for VMWare Clouds',
@@ -1836,6 +2032,10 @@ if __name__ == '__main__':
                            % ', '.join(vs_valid_refs),
                            metavar='ref_list',
                            default=[])
+    vs_parser.add_argument('-map', '--mapservers',
+                           help='List of server IP address pairs to match '
+                           'and replace in a pool. Format as '
+                           'match1,replace1;match2,replace2;...')
     pool_parser = type_parser.add_parser('pool', help='Clone a Pool')
     pool_parser.add_argument('pool_name', help='Name of an existing Pool')
     pool_parser.add_argument('new_pool_names',
@@ -1855,6 +2055,10 @@ if __name__ == '__main__':
                              % ', '.join(pool_valid_refs),
                              metavar='ref_list',
                              default=[])
+    pool_parser.add_argument('-map', '--mapservers',
+                             help='List of server IP address pairs to match '
+                             'and replace in a pool. Format as '
+                             'match1,replace1;match2,replace2;...')
     pool_group_parser = type_parser.add_parser('poolgroup',
                                                help='Clone a Pool Group')
     pool_group_parser.add_argument('pool_group_name',
@@ -1875,6 +2079,10 @@ if __name__ == '__main__':
                                    % ', '.join(pool_valid_refs),
                                    metavar='ref_list',
                                    default=[])
+    pool_group_parser.add_argument('-map', '--mapservers',
+                                   help='List of server IP address pairs to '
+                                   'match and replace in a pool. Format as '
+                                   'match1,replace1;match2,replace2;...')
     generic_parser = type_parser.add_parser('generic',
                       help='Clone a generic object')
     generic_parser.add_argument('object_type',
@@ -1894,6 +2102,10 @@ if __name__ == '__main__':
                                  'rather than re-use',
                                  metavar='ref_list',
                                  default=[])
+    generic_parser.add_argument('-map', '--mapservers',
+                                help='List of server IP address pairs to match '
+                                'and replace in a pool. Format as '
+                                'match1,replace1;match2,replace2;...')
 
     args = parser.parse_args()
 
@@ -1927,8 +2139,8 @@ if __name__ == '__main__':
                                            (user, controller))
 
             if controller2:
-                if not args.tocloud and args.obj_type in ['vs', 'pool',
-                                                          'poolgroup']:
+                if (args.obj_type in ['vs', 'pool', 'poolgroup']
+                    and not args.tocloud):
                     raise Exception('Destination cloud should be specified '
                                     'when cloning %s to a different '
                                     'controller' % args.obj_type)
@@ -1956,12 +2168,18 @@ if __name__ == '__main__':
             else:
                 api2 = None
 
+            flags = args.flags.split(',')
+
             # Create an instance of our cloning class
 
-            cl = AviClone(api, api2)
+            cl = AviClone(api, api2, flags=flags)
 
             force_clone = (args.forceclone.split(',')
                            if args.forceclone else None)
+
+            server_map = ([tuple(pair.split(','))
+                          for pair in args.mapservers.split(';')]
+                          if args.mapservers else None)
 
             if args.obj_type == 'vs':
                 # Loop through the clone names and clone the source VS for
@@ -2044,14 +2262,15 @@ if __name__ == '__main__':
                              new_segroup=args.segroup, tenant=args.tenant,
                              other_tenant=args.totenant,
                              other_cloud=args.tocloud, force_clone=force_clone,
-                             use_internal_ipam=args.internalipam)
+                             use_internal_ipam=args.internalipam,
+                             server_map=server_map)
                     all_created_objs.append(new_vs)
                     all_created_objs.extend(cloned_objs)
                     if warnings:
                         print('OK with warnings:')
                         print()
-                        for w in warnings:
-                            spprint(w, end='', flush=True)
+                        for index, warning in enumerate(warnings):
+                            spprint('%2d. %s' % (index + 1, warning), '    ')
                         print()
                     else:
                         print('OK!')
@@ -2106,15 +2325,22 @@ if __name__ == '__main__':
                                if args.tocloud else ''),
                             flush=True)
 
-                    new_pool, cloned_objs = cl.clone_object(
+                    new_pool, cloned_objs, warnings = cl.clone_object(
                         object_type='pool',
                         old_name=args.pool_name, new_name=new_pool_name,
                         tenant=args.tenant, other_tenant=args.totenant,
                         other_cloud=args.tocloud, force_clone=force_clone,
-                        force_unique_name=False)
+                        force_unique_name=False, server_map=server_map)
                     all_created_objs.append(new_pool)
                     all_created_objs.extend(cloned_objs)
-                    print('OK!')
+                    if warnings:
+                        print('OK with warnings:')
+                        print()
+                        for index, warning in enumerate(warnings):
+                            spprint('%2d. %s' % (index + 1, warning), '    ')
+                        print()
+                    else:
+                        print('OK!')
                     print()
 
                     print('New Pool created as follows:')
@@ -2140,16 +2366,23 @@ if __name__ == '__main__':
                                ' in cloud '+args.tocloud
                                if args.tocloud else ''),
                             flush=True)
-                    new_poolgroup, cloned_objs = cl.clone_object(
+                    new_poolgroup, cloned_objs, warnings = cl.clone_object(
                         object_type='poolgroup',
                         old_name=args.pool_group_name,
                         new_name=new_pool_group_name,
                         tenant=args.tenant, other_tenant=args.totenant,
                         other_cloud=args.tocloud, force_clone=force_clone,
-                        force_unique_name=False)
+                        force_unique_name=False, server_map=server_map)
                     all_created_objs.append(new_poolgroup)
                     all_created_objs.extend(cloned_objs)
-                    print('OK!')
+                    if warnings:
+                        print('OK with warnings:')
+                        print()
+                        for index, warning in enumerate(warnings):
+                            spprint('%2d. %s' % (index + 1, warning), '    ')
+                        print()
+                    else:
+                        print('OK!')
                     print()
 
                     print('New Pool Group created as follows:')
@@ -2174,16 +2407,24 @@ if __name__ == '__main__':
                               ' ['+args.totenant+']'
                               if args.totenant else ''),
                             flush=True)
-                    new_gen, cloned_objs = cl.clone_object(
+                    new_gen, cloned_objs, warnings = cl.clone_object(
                                                   object_type=args.object_type,
                                                   old_name=args.generic_name,
                                                   new_name=new_gen_name,
                                                   tenant=args.tenant,
                                                   other_tenant=args.totenant,
-                                                  force_unique_name=False)
+                                                  force_unique_name=False,
+                                                  server_map=server_map)
                     all_created_objs.append(new_gen)
                     all_created_objs.extend(cloned_objs)
-                    print('OK!')
+                    if warnings:
+                        print('OK with warnings:')
+                        print()
+                        for index, warning in enumerate(warnings):
+                            spprint('%2d. %s' % (index + 1, warning), '    ')
+                        print()
+                    else:
+                        print('OK!')
                     print()
 
                     print('New object of type %s created as follows:'
