@@ -1908,13 +1908,13 @@ if __name__ == '__main__':
         
         * Cloning a VS and child objects within a tenant:
         
-        clone_vs.py -c controller.acme.com -x 17.2.9 vs
+        clone_vs.py -c controller.acme.com vs
         example cloned-example -v 10.10.10.2
         
         
         * Cloning a VS and child objects to a different tenant:
         
-        clone_vs.py -c controller.acme.com -x 17.2.9 vs
+        clone_vs.py -c controller.acme.com vs
         example cloned-example -t tenant1 -2t tenant2
         -v 10.10.10.2
         
@@ -1922,7 +1922,7 @@ if __name__ == '__main__':
         * Cloning a VS and child objects to a different tenant and
         cloud with auto-allocation of VIP:
 
-        clone_vs.py -c controller.acme.com -x 17.2.9 vs
+        clone_vs.py -c controller.acme.com vs
         example cloned-example -t tenant1 -2t tenant2
         -2c Second-Cloud -v 10.10.10.0/24
 
@@ -1930,7 +1930,7 @@ if __name__ == '__main__':
         * Cloning a VS but forcing health monitors and application
         profiles to be cloned rather than re-used in the cloned VS:
         
-        clone_vs.py -c controller.acme.com -x 17.2.9 vs
+        clone_vs.py -c controller.acme.com -x vs
         example cloned-example -fc pool-healthmonitor,vs-appprofile
         
         
@@ -1938,7 +1938,7 @@ if __name__ == '__main__':
         different controller:
         
         clone_vs.py -c controller1.acme.com -dc controller2.acme.com
-        -x 17.2.9 generic health-monitor cloned-health-monitor
+        generic health-monitor cloned-health-monitor
         -t tenant1 -2t tenant2 -2c Default-Cloud
 
 
@@ -1946,7 +1946,7 @@ if __name__ == '__main__':
         specifying auto-allocation for VIPs by subnet in 3 AZs:
 
         clone_vs.py -c controller1.acme.com -dc controller2.acme.com
-        -x 17.2.9 vs example cloned-example
+        vs example cloned-example
         -v 10.0.0.0/24,10.1.0.0/24,10.2.0.0/24
         -t tenant -2t tenant -2c AWS-Cloud
 
@@ -1954,7 +1954,7 @@ if __name__ == '__main__':
         * As above but also with elastic IP allocation:
 
         clone_vs.py -c controller1.acme.com -dc controller2.acme.com
-        -x 17.2.9 vs example cloned-example
+        vs example cloned-example
         -v 10.0.0.0/24,10.1.0.0/24,10.2.0.0/24;auto,auto,auto
         -t tenant -2t tenant -2c AWS-Cloud
 
@@ -1962,18 +1962,19 @@ if __name__ == '__main__':
         * Cloning a VS in 18.1 and above with a static IPv4 and IPv6
         address:
 
-        clone_vs.py -c controller1.acme.com -x 18.1.2 vs example cloned-example
+        clone_vs.py -c controller1.acme.com vs example cloned-example
         -v 10.0.0.10 -v6 fd00:dead:beef:bad:f00d::10
 
 
         * Cloning a VS in 18.1 with new auto-allocation for IPv4 and IPv6:
 
-        clone_vs.py -c controller1.acme.com -x 18.1.2 vs example cloned-example
+        clone_vs.py -c controller1.acme.com vs example cloned-example
         -v 10.0.0.0/16 -v6 fd00:dead:beef:bad:f00d::/64
 
-        If the object to be cloned uses features specific to a
-        particular minimum Avi Vantage s/w release, it may be
-        necessary to specify the API version using the -x parameter.
+        By default, the API version is automatically determined based on the
+        software versions of the source and destination Controllers. It is also
+        possible to specify the specific API version to be used with the -x
+        parameter.
         
         Some known limitations and caveats:
 
