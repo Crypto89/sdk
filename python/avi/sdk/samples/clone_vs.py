@@ -17,8 +17,6 @@ logging.basicConfig(level=logging.ERROR)
 
 urllib3.disable_warnings()
 
-DEFAULT_API_VERSION = '16.4.4'
-
 AVICLONE_VERSION = [1, 2, 0]
 
 # Try to obtain the terminal width to allow spprint() to wrap output neatly.
@@ -46,7 +44,8 @@ class AviClone:
         'pool-sslprofile': 'ssl_profile_ref',
         'pool-ipaddrgroup': 'ipaddrgroup_ref',
         'pool-pkiprofile': 'pki_profile_ref',
-        'pool-sslcert': 'ssl_key_and_certificate_ref'}
+        'pool-sslcert': 'ssl_key_and_certificate_ref',
+        'pool-analyticsprofile': 'analytics_profile_ref'}
     VALID_DATASCRIPT_REF_OBJECTS = {
         'ds-ipgroup': 'ipgroup_refs',
         'ds-stringgroup': 'string_group_refs'}
@@ -62,9 +61,11 @@ class AviClone:
         'vs-servernetworkprofile': 'server_network_profile_ref',
         'vs-sslprofile': 'ssl_profile_ref',
         'vs-sslcert': 'ssl_key_and_certificate_refs',
+        'vs-signingcert': 'saml_sp_config/signing_ssl_key_and_certificate_ref',
         'vs-wafpolicy': 'waf_policy_ref',
         'vs-rewritablecontent': 'content_rewrite/rewritable_content_ref',
-        'vs-authprofile': 'client_auth/auth_profile_ref'}
+        'vs-authprofile': 'client_auth/auth_profile_ref',
+        'vs-ssopolicy': 'sso_policy_ref'}
     VALID_APPLICATIONPROFILE_REF_OBJECTS = {
         'appprofile-cachemimetypesblacklist':
             'http_profile/cache_config/mime_types_black_group_refs',
@@ -78,6 +79,8 @@ class AviClone:
     VALID_SSLCERT_REF_OBJECTS = {
         'ssl-certmgmt': 'certificate_management_profile_ref',
         'ssl-hsmgroup': 'hardwaresecuritymodulegroup_ref'}
+    VALID_SSOPOLICY_REF_OBJECTS = {
+        'sso-authprofile': 'authentication_policy/default_auth_profile_ref'}
 
     def __init__(self, source_api, dest_api=None, flags=None):
         self.api = source_api
@@ -363,6 +366,10 @@ class AviClone:
                 created_objs, warnings = self._process_authprofile(
                     ap_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
                     oc_obj=oc_obj, force_clone=force_clone)
+            elif object_type == 'ssopolicy':
+                created_objs, warnings = self._process_ssopolicy(
+                    sp_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
+                    oc_obj=oc_obj, force_clone=force_clone)           
             elif object_type == 'sslkeyandcertificate':
                 created_objs, warnings = self._process_sslkeyandcertificate(
                     ss_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
@@ -652,6 +659,40 @@ class AviClone:
 
         return created_objs, warnings
 
+    def _process_ssopolicy(self, sp_obj, t_obj, ot_obj, oc_obj,
+                               force_clone):
+        """
+        Performs ssopolicy-specific manipulations on the cloned
+        object
+        """
+
+        logger.debug('Running _process_ssopolicy')
+
+        created_objs = []
+        warnings = []
+
+        try:
+            valid_ref_objects = self.VALID_SSOPOLICY_REF_OBJECTS
+
+            # Process generic references, re-using or cloning referenced
+            # objects as necessary
+
+            created_objs, warnings = self._process_refs(parent_obj=sp_obj,
+                                          refs=valid_ref_objects,
+                                          t_obj=t_obj, ot_obj=ot_obj,
+                                          oc_obj=oc_obj,
+                                          force_clone=force_clone)
+
+        except Exception as ex:
+            # If an exception occurred, delete any intermediate objects we
+            # have created
+
+            self._delete_created_objs(created_objs, ot_obj['uuid'])
+
+            raise
+
+        return created_objs, warnings
+
     def _process_sslkeyandcertificate(self, ss_obj, t_obj, ot_obj, oc_obj,
                                       force_clone):
         """
@@ -665,7 +706,7 @@ class AviClone:
         warnings = []
 
         try:
-            if ot_obj:
+            if ot_obj  or self.api != self.dest_api:
                 # Remove cross-tenant references
                 logger.debug('Removing ca_certs references')
                 ss_obj.pop('ca_certs', None)
@@ -1588,6 +1629,13 @@ class AviClone:
                 warnings.append('VS was linked to a GSLB service with site '
                                 'persistency. Linkage removed in cloned VS.')
 
+            # Fixup SAML configuration
+
+            if 'saml_sp_config' in v_obj:
+                v_obj['saml_sp_config'].pop('sp_metadata', None)
+                warnings.append('VS has a SAML configuration that will need to '
+                                'be manually updated.')
+
             # (Try to!) move the new virtual service to a different cloud
 
             if oc_obj:
@@ -1755,6 +1803,8 @@ class AviClone:
                                     (' in tenant "%s"' % other_tenant)
                                     if other_tenant else '')]
                 v_obj['vsvip_ref'] = new_vsvip_obj['url']
+            else:
+                new_vsvip_obj = None
 
             # Try to create the new VS (possibly in a different tenant to the
             # source)
@@ -1775,7 +1825,8 @@ class AviClone:
                 logger.debug('Created virtual service "%s"', new_vs['url'])
                 if new_vsvip_obj:
                     # No need to track new vsvip object for deletion if VS was
-                    # created successfully
+                    # created successfully; in dryrun, vsvip will be deleted
+                    # automatically when virtualservice is deleted
                     created_objs.remove(new_vsvip_obj)
                 if v_obj_old_url:
                     self.clone_track[v_obj_old_url] = new_vs['url']
@@ -1976,9 +2027,9 @@ if __name__ == '__main__':
                         default='admin')
     parser.add_argument('-p', '--password', help='Avi Vantage password')
     parser.add_argument('-x', '--api_version',
-                        help='Avi Vantage API version (default=%s)'
-                        % DEFAULT_API_VERSION,
-                        default=DEFAULT_API_VERSION)
+                        help='Avi Vantage API version or auto to automatically '
+                             'detect. Default is auto.',
+                        default='auto')
     parser.add_argument('-dc', '--destcontroller',
                         help='FQDN or IP address of target Avi controller')
     parser.add_argument('-du', '--destuser', help='Avi Vantage username',
@@ -2149,24 +2200,55 @@ if __name__ == '__main__':
                     password2 = getpass.getpass('Password for %s@%s:' %
                                                (user2, controller2))
 
-            # Create the API session
+            api_version = (None if args.api_version == 'auto' else
+                           args.api_version)
 
-            print('Creating API session...', end='')
-            api = ApiSession.get_session(controller, user, password,
-                                         api_version=args.api_version)
-            print('OK!')
-            print()
+            while True:
+                # Create the API session
 
-            # Create destination API session to a second controller
-
-            if controller2:
-                print('Creating destination API session...', end='')
-                api2 = ApiSession.get_session(controller2, user2, password2,
-                                              api_version=args.api_version)
+                print('Creating %sAPI session to %s%s...'
+                      % ('source ' if controller2 else '',
+                         controller, (' (%s)' % api_version)
+                         if api_version else ''), end='')
+                api = ApiSession.get_session(controller, user, password,
+                                             api_version=api_version)
                 print('OK!')
                 print()
-            else:
-                api2 = None
+
+                # Create destination API session to a second controller
+
+                if controller2:
+                    print('Creating destination API session to %s%s...'
+                          % (controller2, (' (%s)' % api_version)
+                          if api_version else ''), end='')
+                    api2 = ApiSession.get_session(controller2, user2, password2,
+                                                  api_version=api_version)
+                    print('OK!')
+                    print()
+                else:
+                    api2 = None
+
+                if api_version:
+                    break
+                try:
+                    # Automatically determine API version (minimum of reported
+                    # versions of source and destination Controllers)
+                    ctrl_details = api.get_controller_details()
+                    api_version = api.remote_api_version['Version']
+                    if api2:
+                        ctrl_details2 = api2.get_controller_details()
+                        api_version2 = api.remote_api_version['Version']
+                        if api_version2 < api_version:
+                            api_version = api_version2
+                except (AttributeError, KeyError):
+                    print('Unable to detect API version; using default')
+                    break
+                
+                print('Detected API version %s. Reconnecting.' % api_version)
+                print()
+                api.delete_session()
+                if api2:
+                    api2.delete_session()
 
             flags = args.flags.split(',')
 
