@@ -369,7 +369,7 @@ class AviClone:
             elif object_type == 'ssopolicy':
                 created_objs, warnings = self._process_ssopolicy(
                     sp_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
-                    oc_obj=oc_obj, force_clone=force_clone)           
+                    oc_obj=oc_obj, force_clone=force_clone)
             elif object_type == 'sslkeyandcertificate':
                 created_objs, warnings = self._process_sslkeyandcertificate(
                     ss_obj=old_obj, t_obj=t_obj, ot_obj=ot_obj,
@@ -1301,7 +1301,8 @@ class AviClone:
                  new_vs_vips=None, new_vs_v6vips=None, new_vs_fips=None,
                  new_fqdns=None, new_segroup=None, tenant=None,
                  other_tenant=None, other_cloud=None, force_clone=None,
-                 use_internal_ipam=False, server_map=None):
+                 use_internal_ipam=False, server_map=None,
+                 new_parent=None):
 
         """
         Clones a virtual service object
@@ -1391,6 +1392,11 @@ class AviClone:
             raise Exception('Virtual Service %s could not be found' %
                             old_vs_name)
 
+        is_child_vs = (v_obj['type'] == 'VS_TYPE_VH_CHILD')
+
+        if is_child_vs:
+            logger.debug('Source virtual service is an SNI child VS')
+
         c_obj = self.api.get(v_obj['cloud_ref'].split('/api/')[1]).json()
 
         created_objs = []
@@ -1401,7 +1407,7 @@ class AviClone:
             # addresses and allow auto_allocate_ip to do the work. Otherwise
             # build a new array of VIPs.
 
-            if 'vsvip_ref' in v_obj:
+            if v_obj.get('vsvip_ref', None):
                 # vsvip object is used
 
                 new_vsvip_name = 'vsvip-%s-%s' % (new_vs_name,
@@ -1429,7 +1435,19 @@ class AviClone:
 
                 vsvip_obj = None
 
-            if new_vs_vips == ['*']:
+            if is_child_vs:
+                # VS is a child VS
+                if new_parent:
+                    pvs_obj = self.dest_api.get_object_by_name(
+                                                   'virtualservice', new_parent,
+                                                   tenant_uuid=otenant_uuid)
+                    if pvs_obj:
+                        v_obj['vh_parent_vs_ref'] = pvs_obj['url']
+                    else:
+                        raise Exception('Unable to locate parent VS "%s"%s' %
+                                        (new_parent, (' in tenant "%s"' %
+                                         other_tenant) if other_tenant else ''))
+            elif new_vs_vips == ['*']:
                 # Use auto-allocation from the same subnets as the source
                 # VS (IPv4 and IPv6)
 
@@ -1568,14 +1586,22 @@ class AviClone:
             dns_info_obj = vsvip_obj or v_obj
 
             if new_fqdns == ['*']:
-                if 'dns_info' in dns_info_obj:
-                    new_fqdn = new_vs_name + '.' + dns_info_obj['dns_info'][0][
-                                'fqdn'].split('.', 1)[1]
+                if is_child_vs:
+                    new_fqdn = (new_vs_name + '.' +
+                                v_obj['vh_domain_name'][0].split('.', 1)[1])
+                    v_obj['vh_domain_name'][0] = new_fqdn
+                elif 'dns_info' in dns_info_obj:
+                    new_fqdn = (new_vs_name + '.' +
+                                dns_info_obj['dns_info'][0]['fqdn'].split(
+                                                                     '.', 1)[1])
                     dns_info_obj['dns_info'] = [{'type': 'DNS_RECORD_A',
                                            'fqdn': new_fqdn}]
             else:
                 if new_fqdns != [None]:
-                    dns_info_obj['dns_info'] = [{'type': 'DNS_RECORD_A',
+                    if is_child_vs:
+                        v_obj['vh_domain_name'][0] = new_fqdns[0]
+                    else:
+                        dns_info_obj['dns_info'] = [{'type': 'DNS_RECORD_A',
                                     'fqdn': new_fqdn} for new_fqdn in new_fqdns]
                 else:
                     dns_info_obj.pop('dns_info', None)
@@ -1847,6 +1873,8 @@ class AviClone:
 
             self._delete_created_objs(created_objs, otenant_uuid)
 
+            #logger.debug('Exception occurred', exc_info=ex)
+
             raise Exception('%s\r\n=> Unable to clone virtual service "%s" '
                             'as "%s"' % (ex, old_vs_name, new_vs_name))
 
@@ -2064,11 +2092,14 @@ if __name__ == '__main__':
                action='store_true')
     vs_parser.add_argument('-dn', '--fqdns',
         help='The new FQDN or list of FQDNs or auto to derive from the VS name',
-                           metavar='FQDNs', default='')
+        metavar='FQDNs', default='')
     vs_parser.add_argument('-e', '--enable',
-        help='Enable the cloned Virtual Service', action='store_true')
+          help='Enable the cloned Virtual Service', action='store_true')
+    vs_parser.add_argument('-np', '--newparent',
+                           help='Specify a new parent VS name for a child VS',
+                           metavar='new_parent')
     vs_parser.add_argument('-t', '--tenant',
-                    help='Scope to a particular tenant', metavar='tenant')
+          help='Scope to a particular tenant', metavar='tenant')
     vs_parser.add_argument('-2t', '--totenant',
                            help='Clone the service to a different tenant',
                            metavar='other_tenant')
@@ -2244,7 +2275,7 @@ if __name__ == '__main__':
                 except (AttributeError, KeyError):
                     print('Unable to detect API version; using default')
                     break
-                
+
                 print('Detected API version %s. Reconnecting.' % api_version)
                 print()
                 api.delete_session()
@@ -2346,7 +2377,8 @@ if __name__ == '__main__':
                              other_tenant=args.totenant,
                              other_cloud=args.tocloud, force_clone=force_clone,
                              use_internal_ipam=args.internalipam,
-                             server_map=server_map)
+                             server_map=server_map,
+                             new_parent=args.newparent)
                     all_created_objs.append(new_vs)
                     all_created_objs.extend(cloned_objs)
                     if warnings:
