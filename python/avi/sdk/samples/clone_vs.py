@@ -1468,7 +1468,7 @@ class AviClone:
                     raise Exception('Number of V4 and V6 VIPs should match.')
 
                 if vsvip_obj:
-                    vsvip_obj['vip'] = []
+                    vsvip_obj['vip'] = []                  
                     for c, (new_vs_vip,
                             new_vs_fip,
                             new_vs_v6vip) in enumerate(zip(new_vs_vips,
@@ -1482,6 +1482,8 @@ class AviClone:
 
                                 new_vip['auto_allocate_ip'] = True
                                 subnet = new_vs_vip.split('/')
+                                subnet_uuid = (subnet[2] if len(subnet) > 2
+                                               else None)
                                 if use_internal_ipam:
                                     new_vip['ipam_network_subnet'] = {
                                         'subnet': {
@@ -1489,11 +1491,16 @@ class AviClone:
                                                 'type': 'V4',
                                                 'addr': subnet[0]},
                                             'mask': int(subnet[1])}}
+                                    if subnet_uuid:
+                                        new_vip['ipam_network_subnet'][
+                                                    'subnet_uuid'] = subnet_uuid
                                 else:
                                     new_vip['subnet'] = {
                                         'ip_addr': {'type': 'V4',
                                                     'addr': subnet[0]},
                                         'mask': int(subnet[1])}
+                                    if subnet_uuid:
+                                        new_vip['subnet_uuid'] = subnet_uuid
                             else:
                                 # New VIP is an individual IP so do not
                                 # do auto-allocation
@@ -1510,6 +1517,8 @@ class AviClone:
                                     'V4_V6' if new_vs_vip else 'V6_ONLY')
 
                                 subnet = new_vs_v6vip.split('/')
+                                subnet_uuid = (subnet[2] if len(subnet) > 2
+                                               else None)
                                 if use_internal_ipam:
                                     new_vip['ipam_network_subnet'] = {
                                         'subnet6': {
@@ -1517,12 +1526,17 @@ class AviClone:
                                                 'type': 'V6',
                                                 'addr': subnet[0]},
                                             'mask': int(subnet[1])}}
+                                    if subnet_uuid:
+                                        new_vip['ipam_network_subnet'][
+                                                   'subnet6_uuid'] = subnet_uuid
                                 else:
 
                                     new_vip['subnet6'] = {
                                         'ip_addr': {'type': 'V6',
                                                     'addr': subnet[0]},
                                         'mask': int(subnet[1])}
+                                    if subnet_uuid:
+                                        new_vip['subnet6_uuid'] = subnet_uuid
                             else:
                                 # New VIP is an individual IP so do not
                                 # do auto-allocation
@@ -1549,18 +1563,25 @@ class AviClone:
 
                         v_obj['auto_allocate_ip'] = True
                         subnet = new_vs_vips[0].split('/')
+                        subnet_uuid = subnet[2] if len(subnet) > 2 else None
+                        v_obj.pop('subnet_uuid', None)
                         if use_internal_ipam:
                             v_obj['ipam_network_subnet'] = {'subnet': {
                                            'ip_addr': {'type': 'V4',
                                                        'addr': subnet[0]},
                                            'mask': int(subnet[1])}}
+                            if subnet_uuid:
+                                v_obj['ipam_network_subnet'][
+                                    'subnet_uuid'] = subnet_uuid
                         else:
                             v_obj['subnet'] = {'ip_addr': {'type': 'V4',
                                                            'addr': subnet[0]},
                                                'mask': int(subnet[1])}
-                        v_obj.pop('subnet_uuid', None)
+                            if subnet_uuid:
+                                v_obj['subnet_uuid'] = subnet_uuid   
                         v_obj.pop('network_ref', None)
                         v_obj.pop('ip_address', None)
+                        v_obj.pop('port_uuid', None)
                     else:
                         # New VIP is an individual IP so do not
                         # do auto-allocation
@@ -1947,6 +1968,15 @@ if __name__ == '__main__':
         -v 10.10.10.2
         
 
+        * Cloning a VS and child objects between two Azure clouds:
+        
+        clone_vs.py -c controller.acme.com vs
+        example cloned-example -2c Azure-Cloud-USEast2
+        -v 172.27.33.0/24/vip-subnet
+
+        Note: Azure subnet name (subnet_uuid) must be specified, e.g. vip-subnet 
+
+
         * Cloning a VS and child objects to a different tenant and
         cloud with auto-allocation of VIP:
 
@@ -2082,10 +2112,12 @@ if __name__ == '__main__':
                help='Name(s) to be assigned to the cloned Virtual Service(s)')
     vs_parser.add_argument('-v', '--vips',
           help='The new VIP or list of VIPs (optionally specify list of FIPs '
-          'after ;) or auto or subnet/mask for auto-allocation', metavar='VIPs')
+          'after ;) or auto or subnet/mask[/subnet_uuid] for auto-allocation',
+          metavar='VIPs')
     vs_parser.add_argument('-v6', '--v6vips',
           help='The new IP V6 VIP or list of VIPs '
-          'or auto or subnet/mask for auto-allocation', metavar='V6VIPs')
+          'or auto or subnet/mask[/subnet_uuid] for auto-allocation',
+          metavar='V6VIPs')
     vs_parser.add_argument('-int', '--internalipam',
           help='For auto-allocation specifying subnet/mask, allocate '
                'from internal Avi IPAM/Infoblox, e.g. for VMWare Clouds',
@@ -2269,7 +2301,7 @@ if __name__ == '__main__':
                     api_version = api.remote_api_version['Version']
                     if api2:
                         ctrl_details2 = api2.get_controller_details()
-                        api_version2 = api.remote_api_version['Version']
+                        api_version2 = api2.remote_api_version['Version']
                         if api_version2 < api_version:
                             api_version = api_version2
                 except (AttributeError, KeyError):
