@@ -1302,7 +1302,7 @@ class AviClone:
                  new_fqdns=None, new_segroup=None, tenant=None,
                  other_tenant=None, other_cloud=None, force_clone=None,
                  use_internal_ipam=False, server_map=None,
-                 new_parent=None, reuse_ds=False):
+                 new_parent=None):
 
         """
         Clones a virtual service object
@@ -1794,7 +1794,7 @@ class AviClone:
             # Clone any datascripts referenced in the VS unless reuseds flag
             # is true.
 
-            if 'vs_datascripts' in v_obj and not reuse_ds:
+            if 'vs_datascripts' in v_obj and not 'reuseds' in self.flags:
                 for dsset in v_obj['vs_datascripts']:
                     ds_path = dsset['vs_datascript_set_ref'].split('/api/')[1]
                     ds_name = '-'.join([new_vs_name, (c_obj['name']
@@ -2151,9 +2151,6 @@ if __name__ == '__main__':
                            % ', '.join(vs_valid_refs),
                            metavar='ref_list',
                            default=[])
-    vs_parser.add_argument('-rd', '--reuseds',
-                           help='Try to re-use rather than clone DataScripts',
-                           action='store_true')
     vs_parser.add_argument('-map', '--mapservers',
                            help='List of server IP address pairs to match '
                            'and replace in a pool. Format as '
@@ -2417,8 +2414,7 @@ if __name__ == '__main__':
                              other_cloud=args.tocloud, force_clone=force_clone,
                              use_internal_ipam=args.internalipam,
                              server_map=server_map,
-                             new_parent=args.newparent,
-                             reuse_ds=args.reuseds)
+                             new_parent=args.newparent)
                     all_created_objs.append(new_vs)
                     all_created_objs.extend(cloned_objs)
                     if warnings:
