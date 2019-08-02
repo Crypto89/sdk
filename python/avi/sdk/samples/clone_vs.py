@@ -1302,7 +1302,7 @@ class AviClone:
                  new_fqdns=None, new_segroup=None, tenant=None,
                  other_tenant=None, other_cloud=None, force_clone=None,
                  use_internal_ipam=False, server_map=None,
-                 new_parent=None):
+                 new_parent=None, reuse_ds=False):
 
         """
         Clones a virtual service object
@@ -1453,6 +1453,9 @@ class AviClone:
 
                 for vip in vsvip_obj['vip'] if vsvip_obj else [v_obj]:
                     vip.pop('port_uuid', None)
+                    vip.pop('discovered_networks', None)
+                    if 'ipam_network_subnet' in vip:
+                        vip['ipam_network_subnet'].pop('network_ref', None)
                     if vip['auto_allocate_ip'] is True:
                         vip.pop('ip_address', None)
                         vip.pop('ip6_address', None)
@@ -1468,7 +1471,7 @@ class AviClone:
                     raise Exception('Number of V4 and V6 VIPs should match.')
 
                 if vsvip_obj:
-                    vsvip_obj['vip'] = []                  
+                    vsvip_obj['vip'] = []
                     for c, (new_vs_vip,
                             new_vs_fip,
                             new_vs_v6vip) in enumerate(zip(new_vs_vips,
@@ -1578,7 +1581,7 @@ class AviClone:
                                                            'addr': subnet[0]},
                                                'mask': int(subnet[1])}
                             if subnet_uuid:
-                                v_obj['subnet_uuid'] = subnet_uuid   
+                                v_obj['subnet_uuid'] = subnet_uuid
                         v_obj.pop('network_ref', None)
                         v_obj.pop('ip_address', None)
                         v_obj.pop('port_uuid', None)
@@ -1788,9 +1791,10 @@ class AviClone:
                 created_objs.extend(ns_created_objs)
                 warnings.extend(ns_warnings)
 
-            # Clone any datascripts referenced in the VS
+            # Clone any datascripts referenced in the VS unless reuseds flag
+            # is true.
 
-            if 'vs_datascripts' in v_obj:
+            if 'vs_datascripts' in v_obj and not reuse_ds:
                 for dsset in v_obj['vs_datascripts']:
                     ds_path = dsset['vs_datascript_set_ref'].split('/api/')[1]
                     ds_name = '-'.join([new_vs_name, (c_obj['name']
@@ -2147,6 +2151,9 @@ if __name__ == '__main__':
                            % ', '.join(vs_valid_refs),
                            metavar='ref_list',
                            default=[])
+    vs_parser.add_argument('-rd', '--reuseds',
+                           help='Try to re-use rather than clone DataScripts',
+                           action='store_true')
     vs_parser.add_argument('-map', '--mapservers',
                            help='List of server IP address pairs to match '
                            'and replace in a pool. Format as '
@@ -2410,7 +2417,8 @@ if __name__ == '__main__':
                              other_cloud=args.tocloud, force_clone=force_clone,
                              use_internal_ipam=args.internalipam,
                              server_map=server_map,
-                             new_parent=args.newparent)
+                             new_parent=args.newparent,
+                             reuse_ds=args.reuseds)
                     all_created_objs.append(new_vs)
                     all_created_objs.extend(cloned_objs)
                     if warnings:
