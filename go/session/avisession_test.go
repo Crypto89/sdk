@@ -224,6 +224,19 @@ func TestTenantSwitch(t *testing.T) {
 		testTenantSwitch(t, session)
 	}
 }
+
+func TestApiLogout(t *testing.T) {
+	for _, session := range getSessions(t) {
+		testApiLogout(t, session)
+	}
+}
+
+func TestApiReLogin(t *testing.T) {
+	for _, session := range getSessions(t) {
+		testApiReLogin(t, session)
+	}
+}
+
 func testAviDefaultFields(t *testing.T, avisess *AviSession) {
 	tpool := models.Pool{}
 	pname := "gosdk-test-pool"
@@ -437,5 +450,39 @@ func testTenantSwitch(t *testing.T, avisess *AviSession) {
 	err = avisess.Delete(uri)
 	if err != nil {
 		t.Errorf("Tenant Deletion failed: %s", err)
+	}
+}
+
+// Tests to check logout functionality
+func testApiLogout(t *testing.T, avisess *AviSession) {
+	avisess.Logout()
+	prevSsnId := avisess.sessionid
+	var res interface{}
+	if err := avisess.Get("api/pool", &res); err == nil {
+		if prevSsnId == avisess.sessionid {
+			t.Fail()
+		}
+	} else {
+		t.Fail()
+	}
+}
+
+// Tests to check logout functionality
+func testApiReLogin(t *testing.T, avisess *AviSession) {
+	avisess.csrfToken = "XXXX"
+	prevSsnId := avisess.sessionid
+	newP := models.Pool{}
+	pname := "test-admin-pool"
+	newP.Name = &pname
+	var pObj models.Pool
+	if err := avisess.Post("api/pool", newP, &pObj); err == nil {
+		glog.Infof("prev ssn %s new session %v", prevSsnId, avisess.sessionid)
+		uri := "api/pool/" + *pObj.UUID
+		err = avisess.DeleteObject(uri)
+		if err != nil {
+			t.Errorf("Pool Deletion failed: %s", err)
+		}
+	} else {
+		t.Fail()
 	}
 }
