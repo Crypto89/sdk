@@ -108,7 +108,7 @@ class F5Converter(AviConverter):
         """
         avi_rest_lib.upload_config_to_controller(
             avi_config, self.controller_ip, self.user, self.password,
-            self.tenant)
+            self.tenant, self.controller_version)
 
     def convert(self):
         if not os.path.exists(self.output_file_path):
