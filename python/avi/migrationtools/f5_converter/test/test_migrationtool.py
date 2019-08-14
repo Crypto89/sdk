@@ -207,14 +207,16 @@ class TestF5Converter:
                 f5_ssh_user=setup.get('f5_ssh_user_10'),
                 f5_ssh_password=setup.get('f5_ssh_password'),
                 f5_ssh_port=setup.get('f5_ssh_port'),
-                f5_config_version=setup.get('file_version_v10'),
+                # Dont have version 10 F5 instance
+                # f5_config_version=setup.get('file_version_v10'),
                 skip_pki=True)
 
     @pytest.mark.skip_travis
     @pytest.mark.TCID1_48_1497_3_0
     def test_output_sanitization_v10(self, cleanup):
         f5_conv(bigip_config_file=setup.get('config_file_name_v10'),
-                f5_config_version=setup.get('file_version_v10'),
+                # Dont have version 10 F5 instance
+                # f5_config_version=setup.get('file_version_v10'),
                 controller_version=setup.get('controller_version_v17'),
                 f5_ssh_port=setup.get('f5_ssh_port'),
                 output_file_path=output_file,
