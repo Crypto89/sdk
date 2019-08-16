@@ -196,39 +196,40 @@ class TestF5Converter:
                 password=setup.get('controller_password_17_1_1'),
                 skip_pki=True)
 
-    @pytest.mark.skip_travis
-    @pytest.mark.TCID1_48_1497_2_0
-    def test_download_v10(self, cleanup):
-        """
-        Download Input File Flow, Test for Controller v17.1.1
-        """
-        f5_conv(f5_host_ip=setup.get('f5_host_ip_v10'),
-                controller_version=setup.get('controller_version_v17'),
-                f5_ssh_user=setup.get('f5_ssh_user_10'),
-                f5_ssh_password=setup.get('f5_ssh_password'),
-                f5_ssh_port=setup.get('f5_ssh_port'),
-                # Dont have version 10 F5 instance
-                # f5_config_version=setup.get('file_version_v10'),
-                skip_pki=True)
-
-    @pytest.mark.skip_travis
-    @pytest.mark.TCID1_48_1497_3_0
-    def test_output_sanitization_v10(self, cleanup):
-        f5_conv(bigip_config_file=setup.get('config_file_name_v10'),
-                # Dont have version 10 F5 instance
-                # f5_config_version=setup.get('file_version_v10'),
-                controller_version=setup.get('controller_version_v17'),
-                f5_ssh_port=setup.get('f5_ssh_port'),
-                output_file_path=output_file,
-                skip_pki=True)
-        self.excel_path = os.path.abspath(os.path.join(
-            output_file, 'bigip_v10-ConversionStatus.xlsx'))
-        self.json_path = os.path.abspath(os.path.join(
-            output_file, 'bigip_v10-Output.json'))
-        self.log_path = os.path.abspath(os.path.join(
-            output_file, 'converter.log'))
-        assert output_sanitization(self.excel_path, self.json_path,
-                                   self.log_path)
+    # Dont have version 10 F5 instance so commenting the tests
+    # @pytest.mark.skip_travis
+    # @pytest.mark.TCID1_48_1497_2_0
+    # def test_download_v10(self, cleanup):
+    #     """
+    #     Download Input File Flow, Test for Controller v17.1.1
+    #     """
+    #     f5_conv(f5_host_ip=setup.get('f5_host_ip_v10'),
+    #             controller_version=setup.get('controller_version_v17'),
+    #             f5_ssh_user=setup.get('f5_ssh_user_10'),
+    #             f5_ssh_password=setup.get('f5_ssh_password'),
+    #             f5_ssh_port=setup.get('f5_ssh_port'),
+    #             # Dont have version 10 F5 instance
+    #             # f5_config_version=setup.get('file_version_v10'),
+    #             skip_pki=True)
+    #
+    # @pytest.mark.skip_travis
+    # @pytest.mark.TCID1_48_1497_3_0
+    # def test_output_sanitization_v10(self, cleanup):
+    #     f5_conv(bigip_config_file=setup.get('config_file_name_v10'),
+    #             # Dont have version 10 F5 instance
+    #             # f5_config_version=setup.get('file_version_v10'),
+    #             controller_version=setup.get('controller_version_v17'),
+    #             f5_ssh_port=setup.get('f5_ssh_port'),
+    #             output_file_path=output_file,
+    #             skip_pki=True)
+    #     self.excel_path = os.path.abspath(os.path.join(
+    #         output_file, 'bigip_v10-ConversionStatus.xlsx'))
+    #     self.json_path = os.path.abspath(os.path.join(
+    #         output_file, 'bigip_v10-Output.json'))
+    #     self.log_path = os.path.abspath(os.path.join(
+    #         output_file, 'converter.log'))
+    #     assert output_sanitization(self.excel_path, self.json_path,
+    #                                self.log_path)
 
     @pytest.mark.skip_travis
     @pytest.mark.TCID1_48_1497_4_0
