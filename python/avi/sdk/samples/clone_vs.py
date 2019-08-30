@@ -1418,7 +1418,8 @@ class AviClone:
                                                    otenant_uuid, True)
 
                 vsvip_obj = self.api.get(
-                                v_obj['vsvip_ref'].split('/api/')[1]).json()
+                                v_obj['vsvip_ref'].split('/api/')[1],
+                                tenant_uuid=tenant_uuid).json()
 
                 vsvip_obj.pop('uuid', None)
                 vsvip_obj.pop('url', None)
