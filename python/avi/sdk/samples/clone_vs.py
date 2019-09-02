@@ -120,7 +120,8 @@ class AviClone:
 
         return obj
 
-    def _get_obj_info(self, obj_type, obj=None, obj_name=None, api_to_use=None):
+    def _get_obj_info(self, obj_type, obj=None, obj_name=None,
+                      api_to_use=None, tenant_uuid=None):
 
         """
         Return object name, UUID and object representation from an object
@@ -137,11 +138,11 @@ class AviClone:
                 obj = None
                 obj_uuid = None
             else:
-                if obj_name.startswith('/api/%s/' % obj_type):
-                    # If name begins with /api/<obj_type> assume it is a
+                if obj_name.startswith('/%s/' % obj_type):
+                    # If name begins with /<obj_type>/ assume it is a
                     # URL path to the object.
-                    obj = api_to_use.get(obj_name)
-                    if obj.status_code == 404:
+                    obj_resp = api_to_use.get(obj_name, tenant_uuid=tenant_uuid)
+                    if obj_resp.status_code == 404:
                         # Object was not found; return a pseudo-object with
                         # UUID derived from the URI as a fallback where the
                         # user may not have access to read the object but the
@@ -154,10 +155,28 @@ class AviClone:
                         obj = dict()
                         obj['name'] = obj_name
                         obj['uuid'] = obj_name.split('/api/%s/' % obj_type)[1]
+                    else:
+                        obj = obj_resp.json()
                     obj_name = obj.get('name', None)
                     obj_uuid = obj.get('uuid', None)
                 else:
-                    obj = api_to_use.get_object_by_name(obj_type, obj_name)
+                    obj = api_to_use.get_object_by_name(obj_type, obj_name,
+                                                        tenant_uuid=tenant_uuid)
+
+                    if obj is None and obj_type == 'tenant':
+                        # User may not have access to lookup tenants by name
+                        # so try tenant list API
+
+                        tl_obj = api_to_use.get('/user-tenant-list').json()
+                        for tenant in tl_obj['tenants']:
+                            if tenant['name'] == obj_name:
+                                logger.debug('Found tenant %s in user '
+                                             'tenant list' % obj_name)
+                                obj = dict()
+                                obj['name'] = obj_name
+                                obj['uuid'] = tenant['uuid']
+                                break
+
                     if obj is None:
                         raise Exception('A %s with name %s could not be found'
                                         % (obj_type, obj_name))
@@ -285,7 +304,8 @@ class AviClone:
         oc_obj, other_cloud, ocloud_uuid = self._get_obj_info(obj_type='cloud',
                                                  obj=oc_obj,
                                                  obj_name=other_cloud,
-                                                 api_to_use=self.dest_api)
+                                                 api_to_use=self.dest_api,
+                                                 tenant_uuid=otenant_uuid)
 
         if not object_type:
             # If object_type is not specified, assume the old_name is in
@@ -1376,7 +1396,8 @@ class AviClone:
 
         oc_obj, other_cloud, ocloud_uuid = self._get_obj_info(obj_type='cloud',
                                                  obj_name=other_cloud,
-                                                 api_to_use=self.dest_api)
+                                                 api_to_use=self.dest_api,
+                                                 tenant_uuid=otenant_uuid)
 
         if new_vs_fips != [None] and len(new_vs_vips) != len(new_vs_fips):
             raise Exception('Cannot clone virtual service if number of VIPs '
@@ -1397,7 +1418,8 @@ class AviClone:
         if is_child_vs:
             logger.debug('Source virtual service is an SNI child VS')
 
-        c_obj = self.api.get(v_obj['cloud_ref'].split('/api/')[1]).json()
+        c_obj = self.api.get(v_obj['cloud_ref'].split('/api/')[1],
+                             tenant_uuid=tenant_uuid).json()
 
         created_objs = []
         warnings = []
@@ -1795,7 +1817,7 @@ class AviClone:
             # Clone any datascripts referenced in the VS unless reuseds flag
             # is true.
 
-            if 'vs_datascripts' in v_obj and not 'reuseds' in self.flags:
+            if 'vs_datascripts' in v_obj and 'reuseds' not in self.flags:
                 for dsset in v_obj['vs_datascripts']:
                     ds_path = dsset['vs_datascript_set_ref'].split('/api/')[1]
                     ds_name = '-'.join([new_vs_name, (c_obj['name']
@@ -2059,11 +2081,6 @@ if __name__ == '__main__':
         * The script has been primarily written for and tested with
         Linux Server/VMWare/AWS clouds - it may not work as-is for
         other clouds.
-
-        * The specified user generally needs at least Read access to
-        tenant objects in the admin tenant to be able to resolve tenant
-        names. If this is not possible, source/destination tenants can be
-        specified as a URI rather than name, e.g. /api/tenant/<tenant-uuid>.
     '''
 
     print('%s version %s' % (sys.argv[0], '.'.join(str(v) for v in
