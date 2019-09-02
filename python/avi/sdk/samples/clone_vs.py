@@ -1256,9 +1256,8 @@ class AviClone:
                             # but can be overridden with 'adminssl' flag
 
                             tenant_ref = r_obj.json()['tenant_ref']
-                            check_t_obj = self.dest_api.get(
-                                            tenant_ref.split('/api/')[1]).json()
-                            if check_t_obj['name'] == 'admin':
+                            check_t_obj = tenant_ref.split('/api/')[1]
+                            if check_t_obj == 'tenant/admin':
                                 r_obj_status = 404
 
                         if r_obj_status == 404:
@@ -1266,7 +1265,6 @@ class AviClone:
                                          'target (%s)', r_obj_path)
                             # If not global, check for an object of the same
                             # name in the target tenant context
-
 
                             if r_obj_path in self.clone_track:
                                 # Re-use previously cloned object if
@@ -1879,6 +1877,11 @@ class AviClone:
                                     (' in tenant "%s"' % other_tenant)
                                     if other_tenant else '')]
                 v_obj['vsvip_ref'] = new_vsvip_obj['url']
+
+                # Fixup issue in older release where Controller incorrectly
+                # logs vip/vsvip mismatch if vip array is missing entirely
+                if 'vipcompat' in self.flags:
+                    v_obj['vip'] = new_vsvip_obj['vip']
             else:
                 new_vsvip_obj = None
 
