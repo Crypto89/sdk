@@ -109,10 +109,12 @@ class AviClone:
         resp = api.get(path, tenant, tenant_uuid, timeout=timeout,
                         params=params, api_version=api_version, **kwargs)
         if resp.status_code in (401, 419):
-            ApiSession.reset_session(self.api)
-            resp = api.get_object_by_name(path, name, tenant, tenant_uuid,
-                                          timeout=timeout, params=params,
-                                          **kwargs)
+            ApiSession.reset_session(api)
+            resp = self.get_all_objects_by_name(path, name, tenant=tenant,
+                                                tenant_uuid=tenant_uuid,
+                                                timeout=timeout, params=params,
+                                                api_version=api_version,
+                                                api_to_use=api_to_use, **kwargs)
         if resp.status_code < 300:
             obj = resp.json()['results']
 
