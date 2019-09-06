@@ -1450,6 +1450,7 @@ class AviClone:
                     vsvip_obj['cloud_ref'] = oc_obj['url']
                 v_obj.pop('vip', None)
                 v_obj.pop('dns_info', None)
+                v_obj.pop('east_west_placement', None)
                 v_obj.pop('vsvip_ref', None)
             else:
                 # No vsvip object (version < 17.1) - only a single VIP is
@@ -1877,11 +1878,6 @@ class AviClone:
                                     (' in tenant "%s"' % other_tenant)
                                     if other_tenant else '')]
                 v_obj['vsvip_ref'] = new_vsvip_obj['url']
-
-                # Fixup issue in older release where Controller incorrectly
-                # logs vip/vsvip mismatch if vip array is missing entirely
-                if 'vipcompat' in self.flags:
-                    v_obj['vip'] = new_vsvip_obj['vip']
             else:
                 new_vsvip_obj = None
 
