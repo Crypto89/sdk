@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -122,9 +121,6 @@ const DEFAULT_API_TENANT = "admin"
 
 //NewAviSession initiates a session to AviController and returns it
 func NewAviSession(host string, username string, options ...func(*AviSession) error) (*AviSession, error) {
-	if flag.Parsed() == false {
-		flag.Parse()
-	}
 	avisess := &AviSession{
 		host:     host,
 		username: username,
